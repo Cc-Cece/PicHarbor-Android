@@ -1,0 +1,149 @@
+{
+  "version": "1.0.3",
+  "version_code": 10003,
+  "application_id": "com.cccece.picharbor",
+  "checked_utc": "2026-10-18T16:05:39.636051+00:00",
+  "apk_bytes": 29389447,
+  "apk_sha256": "276767369eec495f078f7e5cd41cb8eb5ff8c001dd0adbd1edef92fddaa70715",
+  "signing_certificate_sha256": "0ffd8b98405c349b15fbe6b955ed8b8875d14600691921c107f318339c63be78",
+  "same_signing_identity_as_1_0_0": true,
+  "signature_verified": true,
+  "min_sdk": 29,
+  "target_sdk": 36,
+  "abis": [
+    "arm64-v8a"
+  ],
+  "debuggable": false,
+  "zip_alignment_16kb": true,
+  "engine_frozen_files": 31,
+  "engine_extension_files": 2,
+  "lint": {
+    "Fatal": 0,
+    "Error": 0,
+    "Warning": 29,
+    "Hint": 2
+  },
+  "native_unit_tests": [
+    {
+      "suite": "com.cccece.picharbor.BackupProgressTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0
+    },
+    {
+      "suite": "com.cccece.picharbor.PolicyTest",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0
+    }
+  ],
+  "python_tests": {
+    "passed": 33,
+    "failures": 0,
+    "run_in_engine_iteration": "1.0.2",
+    "not_repeated_in_1_0_3": "Python engine and declared hashes unchanged"
+  },
+  "device": {
+    "model": "Redmi K40 / M2012K11AC",
+    "android": "14",
+    "sdk": 34,
+    "rom": "PixelExperience aosp_alioth",
+    "rooted": true,
+    "dates_local": [
+      "2026-10-18",
+      "2026-10-19"
+    ],
+    "timezone": "Asia/Shanghai",
+    "real_google_accounts_tested": 1
+  },
+  "manual_queue": {
+    "vault_isolation": true,
+    "saved_account_reuse": true,
+    "account_folder_isolation": true,
+    "outside_auto_folders": true,
+    "auto_disabled": true,
+    "wifi_detected": true,
+    "manual_rounds": [
+      {
+        "state": "done",
+        "error": "",
+        "elapsed_ms": 4319
+      },
+      {
+        "state": "exists",
+        "error": "",
+        "elapsed_ms": 1283
+      },
+      {
+        "state": "exists",
+        "error": "",
+        "elapsed_ms": 2535
+      }
+    ],
+    "fixture_retained": true
+  },
+  "cleanup_batch": {
+    "ready": 28,
+    "blocked": 2,
+    "reasons": {
+      "ORIGINAL_UNAVAILABLE": 2
+    },
+    "elapsed_seconds": 47.225,
+    "notes": "Observed complete batch; not a controlled comparison with serial execution. Eligibility expires after five minutes."
+  },
+  "cleanup_background_checkpoint": {
+    "checked": 2,
+    "total": 4,
+    "state": "syncing",
+    "notification_progress": 2,
+    "notification_max": 4
+  },
+  "cleanup_background_restored": {
+    "state": "completed",
+    "checked": 4,
+    "total": 4,
+    "all_checkpoints_saved": true,
+    "completion_notification": true,
+    "room_version": 2,
+    "parallelism": 2,
+    "forced_stop_and_app_relaunch": true
+  },
+  "cleanup_system_delete": {
+    "local_removed": true,
+    "cloud_retained": true,
+    "system_flow_deleted": true,
+    "deleted_files": 1,
+    "only_explicitly_named_disposable_fixture": true,
+    "production_apk_used_for_system_confirmation": true
+  },
+  "ui_release_smoke": {
+    "selection_animation_cycles": 3,
+    "manual_submit_stays_in_detail": true,
+    "saved_account_panel": true,
+    "root_detail_navigation": true,
+    "statistic_lists_opened": 3,
+    "cleanup_speed_choices": [
+      1,
+      2,
+      3
+    ]
+  },
+  "animation_recording": {
+    "frames_checked": 670,
+    "sample_fps": 15,
+    "max_near_white_pixel_fraction": 0.0001,
+    "near_full_screen_white_frames": 0,
+    "scope": "Observed dark-theme routes and sheets; sampled at 15 fps, not proof for all device/theme combinations. Raw recording stays outside deliverables."
+  },
+  "error_observed": {
+    "cleanup_prepare_first_attempt": "NETWORK_ERROR; no deletion; retry after waking device succeeded"
+  },
+  "pending_acceptance": [
+    "Switch between two different real Google accounts",
+    "Android 10 deletion compatibility on a real device",
+    "SD card removal and SAF deletion on a real device",
+    "New long-duration access-token expiry scenario in 1.0.3",
+    "Light-theme and other manufacturer animation regression"
+  ],
+  "privacy": "No credentials, account identifiers, file names, temporary download URLs, screenshots or recordings included in this report."
+}

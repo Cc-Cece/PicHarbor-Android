@@ -1,0 +1,37 @@
+{
+  "state": "completed",
+  "checked": 29,
+  "total": 29,
+  "mode": "quick",
+  "elapsed_ms": 16147,
+  "metrics": {
+    "read_wait": {
+      "ms": 0,
+      "count": 31
+    },
+    "file_read": {
+      "ms": 2022,
+      "count": 31
+    },
+    "read_bytes": {
+      "ms": 0,
+      "count": 161990099
+    },
+    "content_query": {
+      "ms": 25658,
+      "count": 31
+    },
+    "engine_total": {
+      "ms": 27720,
+      "count": 31
+    },
+    "persist": {
+      "ms": 137,
+      "count": 29
+    },
+    "retry_wait": {
+      "ms": 2001,
+      "count": 2
+    }
+  }
+}

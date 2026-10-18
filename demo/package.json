@@ -1,0 +1,8 @@
+{
+  "name": "cloud-backup-ui-demo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Local frontend prototype for the GMGC Android backup app",
+  "scripts": {"start": "node serve.mjs", "test": "node tests/smoke.mjs"},
+  "devDependencies": {"jsdom": "26.1.0"}
+}

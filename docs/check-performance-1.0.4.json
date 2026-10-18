@@ -1,0 +1,228 @@
+{
+  "quick": {
+    "elapsed_ms": 8608,
+    "metrics": {
+      "read_wait": {
+        "ms": 0,
+        "count": 24
+      },
+      "file_read": {
+        "ms": 1768,
+        "count": 24
+      },
+      "read_bytes": {
+        "ms": 0,
+        "count": 144212228
+      },
+      "content_query": {
+        "ms": 14201,
+        "count": 24
+      },
+      "engine_total": {
+        "ms": 15995,
+        "count": 24
+      },
+      "persist": {
+        "ms": 117,
+        "count": 24
+      }
+    },
+    "cleanup_evidence_unchanged": true
+  },
+  "full_runs": [
+    {
+      "maximum_parallel": 2,
+      "readers": 2,
+      "elapsed_ms": 50864,
+      "metrics": {
+        "sync_requests": {
+          "ms": 2039,
+          "count": 1
+        },
+        "cloud_sync": {
+          "ms": 2104,
+          "count": 1
+        },
+        "engine_total": {
+          "ms": 86925,
+          "count": 25
+        },
+        "read_wait": {
+          "ms": 0,
+          "count": 24
+        },
+        "file_read": {
+          "ms": 1616,
+          "count": 24
+        },
+        "read_bytes": {
+          "ms": 0,
+          "count": 144212228
+        },
+        "content_query": {
+          "ms": 40316,
+          "count": 24
+        },
+        "original_url": {
+          "ms": 22736,
+          "count": 24
+        },
+        "original_head": {
+          "ms": 20061,
+          "count": 20
+        },
+        "persist": {
+          "ms": 110,
+          "count": 24
+        }
+      },
+      "ready": 20
+    },
+    {
+      "maximum_parallel": 4,
+      "readers": 2,
+      "elapsed_ms": 16245,
+      "metrics": {
+        "sync_requests": {
+          "ms": 2286,
+          "count": 1
+        },
+        "cloud_sync": {
+          "ms": 2346,
+          "count": 1
+        },
+        "engine_total": {
+          "ms": 53148,
+          "count": 25
+        },
+        "read_wait": {
+          "ms": 27,
+          "count": 24
+        },
+        "file_read": {
+          "ms": 1592,
+          "count": 24
+        },
+        "read_bytes": {
+          "ms": 0,
+          "count": 144212228
+        },
+        "content_query": {
+          "ms": 14912,
+          "count": 24
+        },
+        "original_url": {
+          "ms": 13978,
+          "count": 24
+        },
+        "original_head": {
+          "ms": 20201,
+          "count": 22
+        },
+        "persist": {
+          "ms": 91,
+          "count": 24
+        }
+      },
+      "ready": 22
+    },
+    {
+      "maximum_parallel": 8,
+      "readers": 2,
+      "elapsed_ms": 10618,
+      "metrics": {
+        "sync_requests": {
+          "ms": 2054,
+          "count": 1
+        },
+        "cloud_sync": {
+          "ms": 2088,
+          "count": 1
+        },
+        "engine_total": {
+          "ms": 56262,
+          "count": 25
+        },
+        "read_wait": {
+          "ms": 397,
+          "count": 24
+        },
+        "file_read": {
+          "ms": 1604,
+          "count": 24
+        },
+        "read_bytes": {
+          "ms": 0,
+          "count": 144212228
+        },
+        "content_query": {
+          "ms": 17706,
+          "count": 24
+        },
+        "original_url": {
+          "ms": 16104,
+          "count": 23
+        },
+        "persist": {
+          "ms": 113,
+          "count": 24
+        },
+        "original_head": {
+          "ms": 18275,
+          "count": 21
+        }
+      },
+      "ready": 21
+    },
+    {
+      "maximum_parallel": 20,
+      "readers": 2,
+      "elapsed_ms": 7754,
+      "metrics": {
+        "sync_requests": {
+          "ms": 2112,
+          "count": 1
+        },
+        "cloud_sync": {
+          "ms": 2151,
+          "count": 1
+        },
+        "engine_total": {
+          "ms": 61160,
+          "count": 25
+        },
+        "read_wait": {
+          "ms": 5041,
+          "count": 24
+        },
+        "file_read": {
+          "ms": 1741,
+          "count": 24
+        },
+        "read_bytes": {
+          "ms": 0,
+          "count": 144212228
+        },
+        "content_query": {
+          "ms": 15929,
+          "count": 24
+        },
+        "original_url": {
+          "ms": 16758,
+          "count": 24
+        },
+        "original_head": {
+          "ms": 19373,
+          "count": 21
+        },
+        "persist": {
+          "ms": 117,
+          "count": 24
+        }
+      },
+      "ready": 21
+    }
+  ],
+  "sample_count": 24,
+  "room_version": 3
+}
