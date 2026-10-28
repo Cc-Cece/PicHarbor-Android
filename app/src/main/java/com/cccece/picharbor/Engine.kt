@@ -51,6 +51,8 @@ object Messages {
         "CLOUD_ITEM_MISSING"->"最新云端列表尚未找到对应内容，请稍后重试"
         "ORIGINAL_NETWORK_ERROR"->"检查云端原件时连接失败，请检查网络后重试"
         "CLOUD_STATE_UNKNOWN"->"云端信息暂不完整，已保留手机原件"
+        "POLICY_CHANGED"->"检查流程已变更，请重新核验"
+        "RISK_CONFIRMATION_REQUIRED"->"请输入完整的风险确认语"
         "ORIGINAL_UNCONFIRMED","ORIGINAL_UNAVAILABLE"->"暂时无法确认云端原件，已保留手机文件"
         "FILENAME_ONLY"->"发现同名文件，尚未确认内容相同"
         "CANCELLED"->"操作已暂停"

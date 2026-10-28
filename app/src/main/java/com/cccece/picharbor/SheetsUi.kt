@@ -59,13 +59,14 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onCleanup
         mode=="concurrency"->"同时上传数量"
         mode=="timeout"->"连接超时"
         mode=="delete-local"->"从手机删除？"
-        mode=="cleanup-confirm"->"可以安心释放空间"
+        mode=="cleanup-confirm"->"确认释放手机空间"
         mode=="cleanup-list"->"核验结果"
         mode=="cleanup-result"->"清理结果"
         mode=="cleanup-speed"->"空间检查速度"
         mode=="cleanup-readers"->"同时读取文件数量"
         mode=="cleanup-retries"->"检查失败重试"
         mode=="cleanup-timing"->"检查耗时详情"
+        mode=="cleanup-risk"->"降低检查强度？"
         mode.startsWith("job:")->"任务详情"
         mode.startsWith("end:")->"结束当前任务？"
         else->"PicHarbor"
@@ -77,10 +78,18 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onCleanup
                 mode=="account"||mode=="login"->{
                     Text("选择备份使用的账号",style=MaterialTheme.typography.bodyMedium)
                     accounts.forEach{account->
-                        SettingsRow(account.email,if(account.email==data.settings.account)"当前备份账号" else if(account.needsLogin)"需要重新登录" else "点按快速切换",Icons.Outlined.AccountCircle,!vm.busy,
-                            onClick={if(account.needsLogin){vm.sheet="";onLogin()}else if(account.email!=data.settings.account)vm.selectAccount(account.email)}) {
-                            if(account.email==data.settings.account)Icon(Icons.Outlined.CheckCircle,"当前账号",tint=MaterialTheme.colorScheme.primary)
-                            IconButton(onClick={vm.sheet="remove-account:${account.email}"},enabled=!vm.busy){Icon(Icons.Outlined.PersonRemove,"从设备移除此账号")}
+                        val choose:()->Unit={if(account.needsLogin){vm.sheet="";onLogin()}else if(account.email!=data.settings.account)vm.selectAccount(account.email)}
+                        Surface(onClick=choose,enabled=!vm.busy,color=MaterialTheme.colorScheme.surfaceContainerLow,shape=MaterialTheme.shapes.medium) {
+                            Row(Modifier.fillMaxWidth().padding(12.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+                                Avatar(account.email,choose)
+                                Column(Modifier.weight(1f)) {
+                                    Text(account.displayName.ifBlank{account.email.substringBefore('@')},style=MaterialTheme.typography.bodyLarge,maxLines=1)
+                                    Text(account.email,style=MaterialTheme.typography.bodySmall,maxLines=1,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                    Text(if(account.email==data.settings.account)"当前备份账号" else if(account.needsLogin)"需要重新登录" else "点按快速切换",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                if(account.email==data.settings.account)Icon(Icons.Outlined.CheckCircle,"当前账号",tint=MaterialTheme.colorScheme.primary)
+                                IconButton(onClick={vm.sheet="remove-account:${account.email}"},enabled=!vm.busy){Icon(Icons.Outlined.PersonRemove,"从设备移除此账号")}
+                            }
                         }
                     }
                     Button(onClick={vm.switchAccount(onLogin)},enabled=!vm.busy,modifier=Modifier.fillMaxWidth()){Icon(Icons.Outlined.Add,null);Text("添加 Google 账号")}
@@ -172,19 +181,25 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onCleanup
                 mode=="cleanup-readers"->{(1..4).forEach{n->Choice("$n 个"+(if(n==2)"（默认）" else ""),data.settings.cleanupReaders==n){vm.setInteger("cleanupReaders",n);vm.sheet="cleanup-speed"}}}
                 mode=="cleanup-retries"->{(0..3).forEach{n->Choice(if(n==0)"不重试" else "$n 次",data.settings.cleanupRetries==n){vm.setInteger("cleanupRetries",n);vm.sheet="cleanup-speed"}}}
                 mode=="cleanup-timing"->{CheckTimingDetails(data.cleanup)}
+                mode=="cleanup-risk"->{
+                    val change=vm.pendingCleanupPolicy
+                    if(change!=null) {
+                        Text("可能在云端原件不可用或状态未确认时，仍允许删除手机文件。删除后可能无法恢复。",color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.titleMedium)
+                        CleanupPolicyNotice(change.desired)
+                        Text("此次变更会使已有清理资格失效，必须重新检查。核心内容检查及系统删除确认仍然保留。")
+                        Text("请手动输入：${CleanupPolicy.ACKNOWLEDGEMENT}")
+                        OutlinedTextField(value=input,onValueChange={input=it},label={Text("输入风险确认语")},modifier=Modifier.fillMaxWidth(),minLines=2)
+                        Button(onClick={vm.confirmCleanupPolicy(input)},enabled=input==CleanupPolicy.ACKNOWLEDGEMENT&&!vm.busy,modifier=Modifier.fillMaxWidth()){Text("确认降低检查强度")}
+                        TextButton(onClick={vm.sheet=""}){Text("保留原设置")}
+                    }
+                }
                 mode=="cleanup-confirm"->{
-                    val ready=data.cleanups.filter{BackupPolicy.cleanupFresh(it,data.settings.account,cleanupNow)}.take(100)
+                    val ready=data.cleanups.filter{BackupPolicy.cleanupFresh(it,data.settings.account,cleanupNow,data.settings.cleanupPolicy.id)}.take(100)
                     Text("本次最多移除 ${ready.size} 个已核验的手机文件，释放 ${formatSize(ready.sumOf{it.bytes})}。")
                     Helper("Google 相册中的备份会保留。手机原件将被移除，其他本地图库可能不再显示；此清理操作可能无法从手机恢复。",Icons.Outlined.Security)
+                    CleanupPolicyNotice(data.settings.cleanupPolicy)
                     Button(onClick=onCleanup,enabled=ready.isNotEmpty()&&!vm.busy&&!data.cleanup.running,modifier=Modifier.fillMaxWidth()){Text("继续并确认清理")}
                     TextButton(onClick={vm.sheet=""}){Text("暂不清理")}
-                }
-                mode=="cleanup-list"->{
-                    val results=data.cleanups.filter{it.id.startsWith("quick:")==(data.cleanup.mode=="quick")}
-                    if(results.isEmpty())Text("先检查可释放空间，再查看核验结果。")
-                    if(data.cleanup.mode=="quick")Helper("仅为备份状态查询，不能据此删除手机文件。")
-                    results.take(150).forEach{record->val media=data.media.find{it.id==record.mediaId};SettingsRow(media?.name?:"已移除的手机文件",when(record.state){"quick_found"->"云端找到相同内容，清理前仍需核验";"ready"->if(BackupPolicy.cleanupFresh(record,data.settings.account,cleanupNow))"核验通过，等待确认" else "结果已过期，需要重新核验";"deleted"->"已从手机移除";"expired"->"需要重新核验";"cancelled"->"已取消，文件保留";else->Messages.error(record.reason)},Icons.Outlined.Security,onClick={}){}}
-                    Helper("不完整的信息不会被当作清理通过的依据。")
                 }
                 mode=="cleanup-result"->{
                     EmptyState("清理操作已结束",vm.deleteSummary,Icons.Outlined.CloudDone)
@@ -198,13 +213,6 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onCleanup
                     Helper("支持的系统媒体会先移入手机回收站；其他文件夹中的文件可能直接移除。")
                     Button(onClick=onLocalDelete,enabled=local.isNotEmpty()&&!vm.busy,modifier=Modifier.fillMaxWidth()){Text("继续从手机删除")}
                     TextButton(onClick={vm.sheet=""}){Text("保留")}
-                }
-                mode.startsWith("job:")->{
-                    val details by vm.jobDetails.collectAsState()
-                    val items=details.filter{it.account==data.settings.account&&it.jobId==mode.substringAfter(':')}
-                    items.take(vm.detailLimit).forEach{item->SettingsRow(item.name,when(item.state){"done"->"已上传";"exists"->"云端已有相同内容";"filename_skipped"->"仅同名跳过，内容待确认";"album_pending"->"内容已备份，相册归类待重试";"cancelled"->if(item.error=="PROMOTED")"已转入优先手动任务" else "已取消";"failed"->Messages.error(item.error);"queued"->"等待处理";else->phaseLabel(item.state)},onClick={}){}}
-                    if(items.size>vm.detailLimit)TextButton(onClick={vm.detailLimit+=200}){Text("加载更多")}
-                    if(items.isEmpty())Text("暂无项目明细。")
                 }
                 mode.startsWith("end:")->{
                     Text("保留已成功备份的内容与历史记录，结束尚未完成的部分。不会删除手机或云端照片。")

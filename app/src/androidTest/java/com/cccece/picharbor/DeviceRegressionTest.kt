@@ -17,10 +17,223 @@ import org.junit.Test
 import org.junit.Before
 import org.junit.runner.RunWith
 import java.io.File
+import androidx.compose.ui.graphics.toArgb
 
 /** Runs only when installed explicitly as a separately signed test APK. No credential export. */
 @RunWith(AndroidJUnit4::class)
 class DeviceRegressionTest {
+    @Test fun allFoldersPersistence():Unit=runBlocking {
+        org.junit.Assume.assumeTrue(InstrumentationRegistry.getArguments().getString("phase")=="all_folders")
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        val graph=(context.applicationContext as PicHarborApp).graph
+        graph.startup.await()
+        val original=graph.preferences.get()
+        val first="picharbor-folders-one@example.invalid"
+        val second="picharbor-folders-two@example.invalid"
+        try {
+            graph.preferences.boolean("auto",false);graph.scheduler.configure()
+            graph.backup.stopAndWait()
+            graph.preferences.activateAccount(first)
+            check(!graph.preferences.get().allFolders)
+            graph.preferences.folders(emptySet())
+            graph.preferences.boolean("allFolders",true)
+            graph.preferences.boolean("videos",false)
+            val persisted=Preferences(context).get()
+            check(persisted.allFolders&&persisted.folders.isEmpty())
+            val future=MediaEntry("test-only","test.jpg","image/jpeg",123,456,456,"future-folder","Future")
+            check(persisted.includes(future))
+            check(!persisted.includes(future.copy(mime="video/mp4")))
+            graph.preferences.activateAccount(second)
+            check(!graph.preferences.get().allFolders)
+            graph.preferences.activateAccount(first)
+            check(graph.preferences.get().allFolders&&graph.preferences.get().folders.isEmpty())
+            graph.preferences.boolean("allFolders",false)
+            check(!graph.preferences.get().includes(future))
+        } finally {
+            graph.preferences.activateAccount(original.account)
+            graph.preferences.boolean("auto",original.auto)
+            graph.preferences.forgetAccount(first);graph.preferences.forgetAccount(second)
+            graph.scheduler.configure()
+        }
+        check(graph.preferences.get()==original)
+        File(context.filesDir,"all-folders-acceptance-1.0.8.json").writeText(JSONObject()
+            .put("default_disabled",true).put("datastore_persistence",true)
+            .put("account_isolation",true).put("future_folder_included",true)
+            .put("video_preference_preserved",true).put("empty_explicit_selection_supported",true)
+            .put("original_settings_restored",true).put("uploads_or_deletions",0).toString(2))
+    }
+    @Test fun accountProfileAcceptance():Unit=runBlocking {
+        org.junit.Assume.assumeTrue(InstrumentationRegistry.getArguments().getString("phase")=="profile_acceptance")
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        val graph=(context.applicationContext as PicHarborApp).graph
+        graph.startup.await()
+        val account=graph.preferences.get().account
+        val credential=graph.credentials.load(account)
+        graph.refreshProfile(account,true).join()
+        val profile=withTimeout(45000) {
+            var current=graph.credentials.accounts.value.first{it.email==account}
+            while(current.avatarPath.isBlank()){delay(100);current=graph.credentials.accounts.value.first{it.email==account}}
+            current
+        }
+        val originalAvatar=File(profile.avatarPath).readBytes()
+        val fake="picharbor-profile-test@example.invalid"
+        try {
+            graph.credentials.save(fake,"disposable-profile-test")
+            graph.credentials.saveProfile(fake,"disposable_subject","Test Display",originalAvatar)
+            val other=graph.credentials.accounts.value.first{it.email==fake}
+            check(other.avatarPath!=profile.avatarPath&&other.displayName=="Test Display")
+            check(File(other.avatarPath).isFile)
+            graph.credentials.saveProfile(fake,"disposable_subject","Test Display",byteArrayOf(0,1,2))
+            check(File(other.avatarPath).readBytes().contentEquals(originalAvatar))
+            graph.credentials.remove(fake)
+            check(!File(other.avatarPath).exists())
+            check(File(profile.avatarPath).readBytes().contentEquals(originalAvatar))
+            check(graph.credentials.load(account)==credential)
+            File(context.filesDir,"profile-acceptance-1.0.7.json").writeText(JSONObject().put("avatar_cached",true).put("avatar_bytes",originalAvatar.size)
+                .put("display_name_available",profile.displayName.isNotBlank()).put("email_name_fallback",profile.displayName.isBlank())
+                .put("account_cache_isolation",true).put("invalid_image_rejected",true).put("removed_account_avatar_deleted",true)
+                .put("real_credentials_unchanged",true).toString(2))
+        } finally {if(graph.credentials.accounts.value.any{it.email==fake})graph.credentials.remove(fake)}
+    }
+    @Test fun accountProfileProbe():Unit=runBlocking {
+        org.junit.Assume.assumeTrue(InstrumentationRegistry.getArguments().getString("phase")=="profile_probe")
+        val instrumentation=InstrumentationRegistry.getInstrumentation()
+        val context=instrumentation.targetContext
+        val graph=(context.applicationContext as PicHarborApp).graph
+        graph.ensureAccount()
+        val code=instrumentation.context.assets.open("profile_probe.py").bufferedReader().use{it.readText()}
+        val globals=Python.getInstance().getModule("builtins").callAttr("dict")
+        Python.getInstance().getModule("builtins").callAttr("exec",code,globals)
+        val report=JSONObject(globals.callAttr("__getitem__","report_json").toString())
+        File(context.filesDir,"profile-probe.json").writeText(report.toString(2))
+        check(report.getBoolean("main_auth_unchanged"))
+    }
+    @Test fun themeForegroundContrast():Unit=runBlocking {
+        org.junit.Assume.assumeTrue(InstrumentationRegistry.getArguments().getString("phase")=="contrast")
+        val instrumentation=InstrumentationRegistry.getInstrumentation()
+        val selected=androidx.compose.runtime.mutableStateOf(HarborSettings(theme="dark",palette="system"))
+        val results=java.util.concurrent.ConcurrentHashMap<String,JSONObject>()
+        lateinit var probe:androidx.compose.ui.platform.ComposeView
+        lateinit var parent:android.view.ViewGroup
+        instrumentation.runOnMainSync {
+            val activity=androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(androidx.test.runner.lifecycle.Stage.RESUMED).first()
+            parent=activity.findViewById(android.R.id.content)
+            // A wrapper avoids changing the activity window while probing themes.
+            probe=androidx.compose.ui.platform.ComposeView(android.content.ContextWrapper(activity))
+            parent.addView(probe,android.view.ViewGroup.LayoutParams(1,1))
+            probe.setContent {
+                val settings=selected.value
+                PicHarborTheme(settings) {
+                    val colors=androidx.compose.material3.MaterialTheme.colorScheme
+                    val foreground=androidx.compose.material3.LocalContentColor.current
+                    androidx.compose.runtime.SideEffect {
+                        fun ratio(f:androidx.compose.ui.graphics.Color,b:androidx.compose.ui.graphics.Color)=androidx.core.graphics.ColorUtils.calculateContrast(f.toArgb(),b.toArgb())
+                        results[settings.theme+":"+settings.palette]=JSONObject()
+                            .put("inherits_on_background",foreground==colors.onBackground)
+                            .put("default_text_contrast",ratio(foreground,colors.background))
+                            .put("settings_title_contrast",ratio(colors.onSurface,colors.surfaceContainerLow))
+                            .put("secondary_text_contrast",ratio(colors.onSurfaceVariant,colors.surfaceContainerLow))
+                    }
+                }
+            }
+        }
+        try {
+            for(theme in listOf("light","dark"))for(palette in listOf("system","lavender","sage","peach")) {
+                instrumentation.runOnMainSync{selected.value=HarborSettings(theme=theme,palette=palette)}
+                val key="$theme:$palette"
+                withTimeout(10000){while(!results.containsKey(key))delay(25)}
+                val result=results.getValue(key)
+                check(result.getBoolean("inherits_on_background"))
+                listOf("default_text_contrast","settings_title_contrast","secondary_text_contrast").forEach{check(result.getDouble(it)>=4.5)}
+            }
+            File(instrumentation.targetContext.filesDir,"theme-contrast-1.0.6.json").writeText(JSONObject(results.toSortedMap()).toString(2))
+        } finally {instrumentation.runOnMainSync{probe.disposeComposition();parent.removeView(probe)}}
+    }
+    @Test fun policyWarningUi():Unit=runBlocking {
+        org.junit.Assume.assumeTrue(InstrumentationRegistry.getArguments().getString("phase")=="policy_ui")
+        val instrumentation=InstrumentationRegistry.getInstrumentation()
+        val graph=(instrumentation.targetContext.applicationContext as PicHarborApp).graph
+        graph.startup.await()
+        check(graph.preferences.get().cleanupPolicy.complete)
+        fun walk(node:android.view.accessibility.AccessibilityNodeInfo?):Sequence<android.view.accessibility.AccessibilityNodeInfo> = sequence {
+            if(node!=null){yield(node);for(i in 0 until node.childCount)yieldAll(walk(node.getChild(i)))}
+        }
+        suspend fun find(text:String):android.view.accessibility.AccessibilityNodeInfo {
+            repeat(20) {
+                val nodes=walk(instrumentation.uiAutomation.rootInActiveWindow).toList()
+                nodes.firstOrNull{it.text?.toString()==text}?.let{return it}
+                nodes.firstOrNull{it.isScrollable}?.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                delay(250)
+            }
+            error("Required test control was not found: $text")
+        }
+        fun control(node:android.view.accessibility.AccessibilityNodeInfo):android.view.accessibility.AccessibilityNodeInfo {
+            var current=node
+            while(!current.isClickable&&current.className?.toString()!="android.widget.Button"&&current.parent!=null)current=current.parent
+            return current
+        }
+        suspend fun click(text:String){check(control(find(text)).performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK));delay(600)}
+        click("我的");click("高级设置");click("空间检查流程");click("最新云端状态核验")
+        fun field()=walk(instrumentation.uiAutomation.rootInActiveWindow).first{it.className?.toString()=="android.widget.EditText"}
+        fun enter(value:String){check(field().performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT,android.os.Bundle().apply{putCharSequence(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,value)}))}
+        enter("wrong");delay(300)
+        check(!control(find("确认降低检查强度")).isEnabled)
+        enter(CleanupPolicy.ACKNOWLEDGEMENT);delay(300)
+        var enabled=false
+        repeat(20){if(!enabled){delay(100);enabled=control(find("确认降低检查强度")).isEnabled}}
+        if(!enabled)File(instrumentation.targetContext.filesDir,"policy-ui-debug.json").writeText(JSONObject().put("exact_input_visible",field().text?.toString()==CleanupPolicy.ACKNOWLEDGEMENT).put("input_length",field().text?.length?:-1).put("confirm_enabled",enabled).toString())
+        check(enabled)
+        click("保留原设置")
+        check(graph.preferences.get().cleanupPolicy.complete)
+        File(instrumentation.targetContext.filesDir,"policy-ui-1.0.5.json").writeText(JSONObject().put("wrong_text_disables_confirmation",true).put("exact_text_enables_confirmation",true).put("cancel_preserves_full_policy",true).toString(2))
+    }
+    @Test fun cleanupPolicyRegression():Unit=runBlocking {
+        org.junit.Assume.assumeTrue(InstrumentationRegistry.getArguments().getString("phase")=="policy")
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        val graph=(context.applicationContext as PicHarborApp).graph
+        graph.startup.await();graph.cleanup.stopAndWait()
+        val original=graph.preferences.get()
+        val report=JSONObject()
+        try {
+            graph.scheduler.cancelTransfers();graph.backup.stopAndWait()
+            graph.preferences.boolean("auto",false)
+            val full=CleanupPolicy()
+            graph.cleanup.changePolicy(PendingCleanupPolicy(original.account,original.cleanupPolicy,full))
+            val reduced=CleanupPolicy(false,false)
+            val change=PendingCleanupPolicy(original.account,full,reduced)
+            var rejected=false
+            try{graph.cleanup.changePolicy(change,"wrong")}catch(error:EngineFailure){rejected=error.code=="RISK_CONFIRMATION_REQUIRED"}
+            check(rejected&&graph.preferences.get().cleanupPolicy.complete)
+            report.put("incorrect_acknowledgement_rejected",true)
+            graph.cleanup.changePolicy(change,CleanupPolicy.ACKNOWLEDGEMENT)
+            check(graph.preferences.get().cleanupPolicy.id=="basic")
+            report.put("explicit_acknowledgement_accepted",true)
+            val target=graph.dao.media().first{it.name.startsWith("PicHarbor-disposable-queue-")&&it.folderName=="PicHarbor Test"}
+            val scan=graph.cleanup.enqueue(listOf(target.id),false)
+            graph.cleanup.runScan(scan.id)
+            val ready=graph.dao.readyCleanup(original.account).first{it.mediaId==target.id&&it.scanId==scan.id}
+            check(ready.policy=="basic")
+            check(!BackupPolicy.cleanupFresh(ready,original.account,System.currentTimeMillis()))
+            check(BackupPolicy.cleanupFresh(ready,original.account,System.currentTimeMillis(),"basic"))
+            val prepared=graph.cleanup.prepareDelete()
+            check(prepared.size==1&&prepared.single().id==ready.id)
+            report.put("basic_proof_is_not_full_proof",true).put("deletion_boundary_checks_passed_without_deleting",true)
+            graph.cleanup.changePolicy(PendingCleanupPolicy(original.account,reduced,full))
+            check(graph.dao.cleanupByIds(listOf(ready.id)).single().state=="expired")
+            check(graph.cleanup.prepareDelete().isEmpty())
+            report.put("policy_change_expires_old_eligibility",true)
+            val done=graph.dao.cleanupScan(scan.id)!!
+            val metrics=JSONObject(done.metrics)
+            check(!metrics.has("cloud_sync")&&!metrics.has("original_url"))
+            report.put("disabled_steps_not_run",true).put("room_version",graph.database.openHelper.readableDatabase.version)
+            File(context.filesDir,"policy-regression-1.0.5.json").writeText(report.toString(2))
+        } finally {
+            graph.cleanup.stopAndWait()
+            val current=graph.preferences.get()
+            graph.cleanup.changePolicy(PendingCleanupPolicy(current.account,current.cleanupPolicy,original.cleanupPolicy),CleanupPolicy.ACKNOWLEDGEMENT)
+            graph.preferences.boolean("auto",original.auto);graph.scheduler.configure()
+        }
+    }
     @Test fun checkPerformance():Unit=runBlocking {
         org.junit.Assume.assumeTrue(InstrumentationRegistry.getArguments().getString("phase")=="performance")
         val context=InstrumentationRegistry.getInstrumentation().targetContext
@@ -75,6 +288,8 @@ class DeviceRegressionTest {
         }
     }
     @Before fun visibleActivity():Unit=runBlocking {
+        val automation=InstrumentationRegistry.getInstrumentation().uiAutomation
+        listOf("input keyevent 224","wm dismiss-keyguard","cmd statusbar collapse").forEach{command->automation.executeShellCommand(command).use{descriptor->android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).use{it.readBytes()}}}
         val context=InstrumentationRegistry.getInstrumentation().targetContext
         context.startActivity(Intent(context,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         delay(1000)

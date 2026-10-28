@@ -22,12 +22,28 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
     val jobs=settings.map{it.account}.distinctUntilChanged().flatMapLatest{graph.dao.jobsFlow(it)}.stateIn(viewModelScope,SharingStarted.Eagerly,emptyList())
     val items=settings.map{it.account}.distinctUntilChanged().flatMapLatest{graph.dao.itemsFlow(it)}.stateIn(viewModelScope,SharingStarted.Eagerly,emptyList())
     val statistics=settings.map{it.account}.distinctUntilChanged().flatMapLatest{graph.dao.statisticsFlow(it)}.stateIn(viewModelScope,SharingStarted.Eagerly,emptyList())
-    private val inspectedJob=MutableStateFlow("")
+    val inspectedJob=MutableStateFlow("")
     val jobDetails=inspectedJob.flatMapLatest{graph.dao.jobItemsFlow(it)}.stateIn(viewModelScope,SharingStarted.WhileSubscribed(5000),emptyList())
     var detailLimit by mutableIntStateOf(200)
-    fun showJob(id:String){inspectedJob.value=id;detailLimit=200;sheet="job:$id"}
+    fun showJob(id:String){inspectedJob.value=id;detailLimit=200;navigate("job-details")}
     val cleanups=settings.map{it.account}.distinctUntilChanged().flatMapLatest{graph.dao.cleanupFlow(it)}.stateIn(viewModelScope,SharingStarted.Eagerly,emptyList())
+    val cleanupScan=settings.map{it.account}.distinctUntilChanged().flatMapLatest{graph.dao.cleanupScanFlow(it)}.stateIn(viewModelScope,SharingStarted.Eagerly,null)
+    val cleanupTasks=cleanupScan.flatMapLatest{scan->if(scan==null)flowOf(emptyList()) else graph.dao.cleanupScanItemsFlow(scan.id)}.stateIn(viewModelScope,SharingStarted.WhileSubscribed(5000),emptyList())
+    var pendingCleanupPolicy by mutableStateOf<PendingCleanupPolicy?>(null);private set
+    fun requestCleanupPolicy(desired:CleanupPolicy) {
+        if(busy||pendingDelete.isNotEmpty()||graph.cleanup.progress.value.running){say("请先结束当前检查或清理操作");return}
+        val change=PendingCleanupPolicy(settings.value.account,settings.value.cleanupPolicy,desired)
+        if(change.previous==desired)return
+        if(desired.weakerThan(change.previous)){pendingCleanupPolicy=change;sheet="cleanup-risk"}
+        else action{graph.cleanup.changePolicy(change);pendingCleanupPolicy=null;message="已恢复检查，原清理资格已失效，请重新核验"}
+    }
+    fun confirmCleanupPolicy(acknowledgement:String)=action {
+        val change=pendingCleanupPolicy?:return@action
+        graph.cleanup.changePolicy(change,acknowledgement)
+        pendingCleanupPolicy=null;sheet="";message="已降低核验强度，请重新检查。清理前请留意跳过的项目。"
+    }
     var page by mutableStateOf("photos");private set
+    var navigationForward by mutableStateOf(true);private set
     private val stack=mutableListOf<String>()
     var selected by mutableStateOf(setOf<String>());private set
     var selectionMode by mutableStateOf(false);private set
@@ -49,9 +65,9 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
     var deleteSummary by mutableStateOf("");private set
     val engineReady get()=graph.engineReady
     init { refresh() }
-    fun navigate(destination:String){stack+=page;page=destination;sheet="";selected=emptySet();selectionMode=false}
+    fun navigate(destination:String){navigationForward=true;stack+=page;page=destination;sheet="";selected=emptySet();selectionMode=false}
     fun tab(destination:String){stack.clear();page=destination;sheet="";selected=emptySet();selectionMode=false}
-    fun back(){if(sheet.isNotEmpty()){sheet="";return};if(selectionMode){clearSelection();return};page=stack.removeLastOrNull()?:"photos"}
+    fun back(){if(sheet.isNotEmpty()){sheet="";return};if(selectionMode){clearSelection();return};navigationForward=false;page=stack.removeLastOrNull()?:"photos"}
     fun open(media:MediaEntry){if(selectionMode){select(media.id);return};activeMedia=media;navigate("detail")}
     fun select(id:String){selectionMode=true;selected=if(id in selected)selected-id else selected+id}
     fun selectAll(ids:List<String>){selectionMode=true;selected=selected+ids}
@@ -96,6 +112,11 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
     fun setBoolean(key:String,value:Boolean)=action {
         graph.preferences.boolean(key,value);graph.scheduler.configure()
     }
+    fun setAllFolders(value:Boolean)=action {
+        graph.preferences.boolean("allFolders",value)
+        graph.scheduler.configure()
+        if(graph.preferences.get().onboarded)graph.scheduler.checkSoon()
+    }
     fun setString(key:String,value:String)=action {
         graph.preferences.string(key,value);graph.scheduler.configure()
     }
@@ -103,6 +124,7 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
     fun setMobile(value:String)=action {graph.preferences.mobile(value);graph.scheduler.configure();sheet=""}
     fun folder(key:String,checked:Boolean)=action {
         val current=graph.preferences.get();var chosen=current.folders
+        if(current.allFolders)return@action
         if(key=="@camera")chosen=if(checked)chosen+key else chosen-key
         else {
             val mediaFolder=media.value.find{it.folderKey==key}

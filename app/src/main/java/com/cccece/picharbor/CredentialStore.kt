@@ -12,11 +12,14 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import coil.imageLoader
 
-data class SavedAccount(val email:String,val needsLogin:Boolean=false)
+data class SavedAccount(val email:String,val needsLogin:Boolean=false,val displayName:String="",val avatarPath:String="",val profileCheckedAt:Long=0)
 
 /** One AES-GCM key per account. Removing an account never removes other keys. */
 class CredentialStore(context:Context) {
+    private val appContext=context.applicationContext
+    private val avatars=java.io.File(context.filesDir,"account-avatars")
     private val prefs=context.getSharedPreferences("accounts_v2",Context.MODE_PRIVATE)
     private val legacy=context.getSharedPreferences("credential",Context.MODE_PRIVATE)
     val accounts=MutableStateFlow(listOf<SavedAccount>())
@@ -33,7 +36,30 @@ class CredentialStore(context:Context) {
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
         }.generateKey()
     }
-    private fun publish(){accounts.value=prefs.getStringSet("accounts",emptySet()).orEmpty().sorted().map{SavedAccount(it,prefs.getBoolean("expired_${slot(it)}",false))}}
+    private fun publish(){accounts.value=prefs.getStringSet("accounts",emptySet()).orEmpty().sorted().map{
+        val id=slot(it);val avatar=java.io.File(avatars,"$id.img")
+        SavedAccount(it,prefs.getBoolean("expired_$id",false),prefs.getString("name_$id","").orEmpty(),if(avatar.isFile)avatar.absolutePath else "",prefs.getLong("profile_at_$id",0))
+    }}
+    @Synchronized fun saveProfile(account:String,subject:String,name:String,image:ByteArray?) {
+        val email=normal(account);val id=slot(email)
+        if(email !in prefs.getStringSet("accounts",emptySet()).orEmpty())return
+        require(subject.matches(Regex("[A-Za-z0-9_-]{1,255}")))
+        val previous=prefs.getString("subject_$id",null)
+        if(previous!=null&&previous!=subject)return
+        val avatar=android.util.AtomicFile(java.io.File(avatars,"$id.img"))
+        if(image!=null&&image.size in 1..512*1024) {
+            val size=android.graphics.BitmapFactory.Options().apply{inJustDecodeBounds=true}
+            android.graphics.BitmapFactory.decodeByteArray(image,0,image.size,size)
+            if(size.outWidth in 1..4096&&size.outHeight in 1..4096) {
+                avatars.mkdirs()
+                val output=avatar.startWrite()
+                try{output.write(image);avatar.finishWrite(output)}catch(error:Exception){avatar.failWrite(output);throw error}
+            }
+        }
+        val safeName=name.trim().takeIf{it.length<=100&&it.none{c->c.code<32}}.orEmpty()
+        check(prefs.edit().putString("subject_$id",subject).putString("name_$id",safeName).putLong("profile_at_$id",System.currentTimeMillis()).commit())
+        publish()
+    }
     @Synchronized fun save(account:String,value:String) {
         val email=normal(account);require(email.contains('@'))
         val id=slot(email)
@@ -55,9 +81,11 @@ class CredentialStore(context:Context) {
     @Synchronized fun needsLogin(account:String,value:Boolean){prefs.edit().putBoolean("expired_${slot(account)}",value).apply();publish()}
     @Synchronized fun remove(account:String) {
         val email=normal(account);val id=slot(email)
-        check(prefs.edit().remove("iv_$id").remove("data_$id").remove("expired_$id")
+        check(prefs.edit().remove("iv_$id").remove("data_$id").remove("expired_$id").remove("subject_$id").remove("name_$id").remove("profile_at_$id")
             .putStringSet("accounts",prefs.getStringSet("accounts",emptySet()).orEmpty()-email).commit())
         KeyStore.getInstance("AndroidKeyStore").apply{load(null);if(containsAlias(alias(email)))deleteEntry(alias(email))}
+        android.util.AtomicFile(java.io.File(avatars,"$id.img")).delete()
+        appContext.imageLoader.memoryCache?.let{cache->cache.keys.filter{it.key.startsWith("avatar:$email:")}.forEach{cache.remove(it)}}
         publish()
     }
     /** Upgrade 1.0.0/1.0.1 in place; delete the legacy copy only after verified storage. */

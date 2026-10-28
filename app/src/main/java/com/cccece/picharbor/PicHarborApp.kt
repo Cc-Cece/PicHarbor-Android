@@ -29,6 +29,7 @@ class PicHarborApp:Application(), coil.ImageLoaderFactory, androidx.work.Configu
             graph.scheduler.restorePending()
             graph.cleanup.restorePending()
             } finally { graph.startup.complete(Unit) }
+            graph.refreshProfile(graph.preferences.get().account)
         }
         graph.media.observe(graph.scope) {
             val settings=graph.preferences.get()
@@ -41,6 +42,8 @@ class AppGraph(val app:Application,val engineReady:Boolean) {
     val visible=java.util.concurrent.atomic.AtomicBoolean(false)
     val switching=kotlinx.coroutines.flow.MutableStateFlow(false)
     private val accountLock=kotlinx.coroutines.sync.Mutex()
+    private val profileLock=kotlinx.coroutines.sync.Mutex()
+    private val profileAttempts=java.util.concurrent.ConcurrentHashMap<String,Long>()
     val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     val database=HarborDatabase.open(app)
     val dao=database.dao()
@@ -51,6 +54,28 @@ class AppGraph(val app:Application,val engineReady:Boolean) {
     val backup=BackupRepository(this)
     val cleanup=CleanupRepository(this)
     val scheduler=Scheduler(this)
+    fun refreshProfile(account:String,force:Boolean=false)=scope.launch {
+        if(account.isBlank()||!profileLock.tryLock())return@launch
+        try {
+            startup.await()
+            if(switching.value||preferences.get().account!=account)return@launch
+            val saved=credentials.accounts.value.firstOrNull{it.email==account}?:return@launch
+            val now=System.currentTimeMillis()
+            val maxAge=if(saved.avatarPath.isBlank()&&saved.displayName.isBlank())30*60_000 else 24*60*60_000
+            if(!force&&saved.profileCheckedAt<=now&&now-saved.profileCheckedAt<maxAge)return@launch
+            val previous=profileAttempts[account]?:0
+            if(!force&&previous<=now&&now-previous<30*60_000)return@launch
+            profileAttempts[account]=now
+            if(ensureAccount()!=account)return@launch
+            val response=engine.call("account_profile",org.json.JSONObject().put("_account",account),EngineCallback({switching.value}))
+            if(response.optBoolean("available")&&response.optString("account")==account&&!switching.value&&preferences.get().account==account) {
+                val image=response.optString("avatar_base64").takeIf{it.length<=700000&&it.isNotBlank()}?.let{android.util.Base64.decode(it,android.util.Base64.DEFAULT)}
+                credentials.saveProfile(account,response.getString("subject"),response.optString("name"),image)
+            }
+        } catch(_:Exception) {
+            // Optional display information must never fail login, backup or account switching.
+        } finally {profileLock.unlock()}
+    }
     suspend fun ensureAccount():String {
         startup.await()
         if(switching.value)throw EngineFailure("ACCOUNT_CHANGED")
@@ -92,6 +117,7 @@ class AppGraph(val app:Application,val engineReady:Boolean) {
             switching.value=false;accountLock.unlock()
             scheduler.configure();scheduler.restorePending()
         }
+        refreshProfile(preferences.get().account)
     }
     suspend fun removeAccount(account:String) {
         startup.await();accountLock.lock();switching.value=true

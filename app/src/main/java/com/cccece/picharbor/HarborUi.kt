@@ -32,6 +32,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -96,21 +98,22 @@ fun HarborRoot(vm:HarborViewModel,onLogin:()->Unit,onPermissions:()->Unit,onPick
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
           Column(Modifier.fillMaxSize()) {
             HarborTopStatus(vm,data,transfers)
-            AnimatedContent(targetState=vm.page,modifier=Modifier.weight(1f).fillMaxWidth()
-                .consumeWindowInsets(if(hasStatus)WindowInsets.statusBars else WindowInsets(0,0,0,0)),transitionSpec={
-                val direction=if(HarborMotion.pageOrder(targetState)>=HarborMotion.pageOrder(initialState))1 else -1
-                ((fadeIn(tween(HarborMotion.MEDIUM,60))+slideInHorizontally(tween(300,easing=FastOutSlowInEasing)){it/18*direction}) togetherWith
-                    fadeOut(tween(HarborMotion.SHORT))).using(null)
-            },label="page-transition") { page ->
-                pageState.SaveableStateProvider(page) {
-                    Scaffold(bottomBar={
-                        if(page in setOf("photos","backup","me")) NavigationBar(containerColor=MaterialTheme.colorScheme.surfaceContainerLow) {
-                            listOf(Triple("photos",Icons.Outlined.PhotoLibrary,"照片"),Triple("backup",Icons.Outlined.Cloud,"备份"),Triple("me",Icons.Outlined.PersonOutline,"我的")).forEach{(route,icon,label)->
-                                NavigationBarItem(selected=page==route,onClick={vm.tab(route)},icon={Icon(icon,label)},label={Text(label)})
-                            }
-                        }
-                    }) { insets ->
-                        Box(Modifier.fillMaxSize().padding(insets).consumeWindowInsets(insets)) {
+            val rootPages=remember{setOf("photos","backup","me")}
+            var lastRoot by remember{mutableStateOf("photos")}
+            SideEffect {if(vm.page in rootPages)lastRoot=vm.page}
+            val density=LocalDensity.current
+            var measuredBar by remember{mutableIntStateOf(0)}
+            val barHeight=if(measuredBar>0)with(density){measuredBar.toDp()} else 80.dp+WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+            Box(Modifier.weight(1f).fillMaxWidth().consumeWindowInsets(if(hasStatus)WindowInsets.statusBars else WindowInsets(0,0,0,0))) {
+                AnimatedContent(targetState=vm.page,modifier=Modifier.fillMaxSize(),transitionSpec={
+                    val tabs=initialState in rootPages&&targetState in rootPages
+                    val enter=fadeIn(tween(260,easing=FastOutSlowInEasing))+
+                        slideInHorizontally(tween(320,easing=FastOutSlowInEasing)){if(tabs)0 else it/32*(if(vm.navigationForward)1 else -1)}
+                    (enter togetherWith fadeOut(tween(180,easing=FastOutSlowInEasing))).using(null)
+                },label="content-transition") { page ->
+                    pageState.SaveableStateProvider(page) {
+                        val padding=if(page in rootPages)Modifier.padding(bottom=barHeight).windowInsetsPadding(if(hasStatus)WindowInsets(0,0,0,0) else WindowInsets.statusBars) else Modifier.navigationBarsPadding()
+                        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).then(padding)) {
                             when(page) {
                                 "photos"->PhotosScreen(vm,data,onPermissions,onPickFiles)
                                 "backup"->BackupScreen(vm,data,onLogin)
@@ -123,9 +126,20 @@ fun HarborRoot(vm:HarborViewModel,onLogin:()->Unit,onPermissions:()->Unit,onPick
                                 "cleanup"->CleanupScreen(vm,data,onCleanup)
                                 "detail"->DetailScreen(vm,data)
                                 "backup-list"->BackupListScreen(vm,data)
+                                "cleanup-results"->CleanupResultsScreen(vm,data)
+                                "job-details"->JobDetailsScreen(vm,data)
+                                "cleanup-policy"->CleanupPolicyScreen(vm,data)
                                 else->PhotosScreen(vm,data,onPermissions,onPickFiles)
                             }
                             if(vm.busy&&!hasStatus)LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+                        }
+                    }
+                }
+                // This single navigation bar stays mounted for all three root tabs.
+                androidx.compose.animation.AnimatedVisibility(visible=vm.page in rootPages,modifier=Modifier.align(Alignment.BottomCenter),enter=fadeIn(tween(220)),exit=fadeOut(tween(180))) {
+                    NavigationBar(modifier=Modifier.onSizeChanged{measuredBar=it.height},containerColor=MaterialTheme.colorScheme.surfaceContainerLow) {
+                        listOf(Triple("photos",Icons.Outlined.PhotoLibrary,"\u7167\u7247"),Triple("backup",Icons.Outlined.Cloud,"\u5907\u4efd"),Triple("me",Icons.Outlined.PersonOutline,"\u6211\u7684")).forEach{(route,icon,label)->
+                            NavigationBarItem(selected=(if(vm.page in rootPages)vm.page else lastRoot)==route,onClick={if(vm.page!=route)vm.tab(route)},icon={Icon(icon,label)},label={Text(label)})
                         }
                     }
                 }
@@ -140,7 +154,7 @@ fun HarborRoot(vm:HarborViewModel,onLogin:()->Unit,onPermissions:()->Unit,onPick
 @Composable
 fun PageTitle(title:String,vm:HarborViewModel,root:Boolean=false,action:@Composable RowScope.()->Unit={}) {
     if(root)Row(Modifier.fillMaxWidth().padding(start=24.dp,end=16.dp,top=18.dp,bottom=16.dp),verticalAlignment=Alignment.CenterVertically) {
-        Text(title,style=MaterialTheme.typography.headlineLarge,modifier=Modifier.weight(1f));action()
+        Text(title,style=MaterialTheme.typography.headlineLarge,color=MaterialTheme.colorScheme.onBackground,modifier=Modifier.weight(1f));action()
     } else TopAppBar(title={Text(title)},navigationIcon={IconButton(onClick=vm::back){Icon(Icons.Outlined.ArrowBack,"返回")}},actions=action)
 }
 @Composable
@@ -148,7 +162,7 @@ fun SettingsRow(title:String,subtitle:String="",icon:ImageVector?=null,enabled:B
     Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow).clickable(enabled=enabled,onClick=onClick)
         .padding(horizontal=18.dp,vertical=15.dp).heightIn(min=40.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(14.dp)) {
         if(icon!=null)Icon(icon,null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.size(23.dp))
-        Column(Modifier.weight(1f)){Text(title,style=MaterialTheme.typography.bodyLarge);if(subtitle.isNotEmpty())Text(subtitle,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=3.dp))}
+        Column(Modifier.weight(1f)){Text(title,style=MaterialTheme.typography.bodyLarge,color=MaterialTheme.colorScheme.onSurface);if(subtitle.isNotEmpty())Text(subtitle,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=3.dp))}
         if(trailing!=null)trailing() else Icon(Icons.Outlined.ChevronRight,null,tint=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.size(19.dp))
     }
 }
@@ -184,7 +198,7 @@ fun backupHeading(vm:HarborViewModel,data:HarborUiData):Pair<String,String> = wh
     data.latestJob?.state=="waiting"->"等待网络条件满足" to "连接 Wi-Fi 后会继续未完成的任务"
     data.latestJob?.state=="auth_required"->"账号需要重新登录" to "重新连接后继续未完成的备份"
     data.latestJob?.state=="needs_attention"->"有项目需要处理" to "已成功备份的内容不会重复上传"
-    data.settings.folders.isEmpty()->"选择备份文件夹" to "只备份你想留住的内容"
+    !data.settings.allFolders&&data.settings.folders.isEmpty()->"选择备份文件夹" to "只备份你想留住的内容"
     data.pending.isNotEmpty()->"还有 ${data.pending.size} 项待检查或备份" to "原始画质 · 备份到 Google 相册"
     else->"备份已完成" to "已选文件夹中当前可访问的内容均已备份"
 }
@@ -256,7 +270,13 @@ fun PhotosScreen(vm:HarborViewModel,data:HarborUiData,onPermissions:()->Unit,onP
 
 @Composable
 fun Avatar(account:String,onClick:()->Unit){Surface(onClick=onClick,color=MaterialTheme.colorScheme.tertiaryContainer,shape=CircleShape,modifier=Modifier.size(40.dp)){
-    Box(contentAlignment=Alignment.Center){Text(if(account.isEmpty())"?" else account.first().uppercase(),fontWeight=FontWeight.SemiBold)}
+    val accounts by (LocalContext.current.applicationContext as PicHarborApp).graph.credentials.accounts.collectAsState()
+    val profile=accounts.firstOrNull{it.email==account}
+    Box(contentAlignment=Alignment.Center){
+        Text(if(account.isEmpty())"?" else (profile?.displayName?.ifBlank{account}?:account).first().uppercase(),fontWeight=FontWeight.SemiBold)
+        if(!profile?.avatarPath.isNullOrBlank())AsyncImage(ImageRequest.Builder(LocalContext.current).data(java.io.File(profile!!.avatarPath))
+            .memoryCacheKey("avatar:$account:${profile.profileCheckedAt}").diskCachePolicy(coil.request.CachePolicy.DISABLED).build(),null,Modifier.fillMaxSize(),contentScale=ContentScale.Crop)
+    }
 }}
 
 @Composable
@@ -270,7 +290,7 @@ fun BackupScreen(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit) {
                 data.activeJob.isNotEmpty()->FilledTonalButton(onClick=vm::pause,enabled=job?.state!="pausing"&&!vm.busy){Icon(Icons.Outlined.Pause,null);Text("暂停备份")}
                 job?.state=="paused"->Button(onClick={vm.resume(job.id)},enabled=!vm.busy){Icon(Icons.Outlined.PlayArrow,null);Text("继续备份")}
                 job?.state=="needs_attention"->Button(onClick={vm.retry(job.id)},enabled=!vm.busy){Text("重试未完成项目")}
-                data.settings.folders.isEmpty()->Button(onClick={vm.navigate("folders")}){Text("选择备份文件夹")}
+                !data.settings.allFolders&&data.settings.folders.isEmpty()->Button(onClick={vm.navigate("folders")}){Text("选择备份文件夹")}
                 else->Button(onClick={vm.start()},enabled=!vm.busy&&vm.engineReady){Icon(Icons.Outlined.CloudUpload,null);Spacer(Modifier.width(8.dp));Text(if(data.pending.isEmpty())"检查并备份" else "立即备份")}
             }
         }
@@ -294,7 +314,7 @@ fun BackupScreen(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit) {
             Spacer(Modifier.height(18.dp))
             SettingGroup {
                 ToggleRow("自动备份",if(data.settings.auto)"有新增内容时自动检查" else "已关闭，仍可手动备份",data.settings.auto,Icons.Outlined.CloudUpload,!vm.busy){vm.setBoolean("auto",it)}
-                SettingsRow("备份文件夹","选择自动备份的范围",Icons.Outlined.Folder,onClick={vm.navigate("folders")})
+                SettingsRow("备份文件夹",if(data.settings.allFolders)"所有文件夹 · 自动包含新文件夹" else "选择自动备份的范围",Icons.Outlined.Folder,onClick={vm.navigate("folders")})
                 SettingsRow("任务记录","查看已完成和未完成的备份",Icons.Outlined.History,onClick={vm.navigate("history")})
             }
             Helper("已备份状态只针对当前账号。新文件先核对云端内容，再决定是否上传。",Icons.Outlined.Security)
@@ -307,13 +327,15 @@ fun phaseLabel(phase:String)=when(phase){"hashing"->"检查本地文件";"checki
 @Composable
 fun ProfileScreen(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit) {
     val backed=data.media.filter{data.backed(it)}
+    val accounts by vm.accounts.collectAsState()
+    val profile=accounts.firstOrNull{it.email==data.settings.account}
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         PageTitle("我的",vm,true){IconButton(onClick={vm.sheet="appearance"}){Icon(Icons.Outlined.Palette,"外观")}}
         Column(Modifier.padding(horizontal=20.dp)) {
             Surface(onClick={vm.sheet="account"},shape=RoundedCornerShape(26.dp),color=MaterialTheme.colorScheme.surfaceContainerLow){
                 Row(Modifier.fillMaxWidth().padding(20.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(16.dp)){
                     Avatar(data.settings.account){vm.sheet="account"}
-                    Column(Modifier.weight(1f)){Text(data.settings.account.substringBefore('@').ifEmpty{"尚未登录"},style=MaterialTheme.typography.titleLarge);Text(data.settings.account.ifEmpty{"登录 Google，开始备份"},style=MaterialTheme.typography.bodySmall)}
+                    Column(Modifier.weight(1f)){Text(profile?.displayName?.takeIf{it.isNotBlank()}?:data.settings.account.substringBefore('@').ifEmpty{"尚未登录"},style=MaterialTheme.typography.titleLarge);Text(data.settings.account.ifEmpty{"登录 Google，开始备份"},style=MaterialTheme.typography.bodySmall)}
                     Icon(Icons.Outlined.ChevronRight,null)
                 }
             }

@@ -13,8 +13,8 @@ android {
         applicationId = "com.cccece.picharbor"
         minSdk = 29
         targetSdk = 36
-        versionCode = 10004
-        versionName = "1.0.4"
+        versionCode = 10008
+        versionName = "1.0.8"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -26,7 +26,6 @@ android {
     buildFeatures { compose = true; buildConfig = true }
     sourceSets["main"].java.setSrcDirs(listOf("src/main/java/com"))
     sourceSets["test"].java.setSrcDirs(listOf("src/test/java/com"))
-    sourceSets["main"].assets.srcDir(rootProject.file("docs/baseline-assets"))
     signingConfigs {
         create("production") {
             System.getenv("PICHARBOR_KEYSTORE")?.let { storeFile = file(it) }

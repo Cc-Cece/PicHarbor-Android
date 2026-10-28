@@ -37,7 +37,9 @@ data class BackupItem(
 data class CleanupRecord(
     @PrimaryKey val id: String, val account: String, val mediaId: String, val bytes: Long,
     val sha256: String, val remoteKey: String, val checkedAt: Long, val state: String,
-    val reason: String = "", val deletedAt: Long = 0
+    val reason: String = "", val deletedAt: Long = 0,
+    @ColumnInfo(defaultValue="'full'") val policy:String="full",
+    @ColumnInfo(defaultValue="''") val scanId:String=""
 )
 
 data class JobStatistics(val jobId:String,val total:Int,val succeeded:Int,val failed:Int,val skipped:Int,val bytes:Long,val finished:Int=0)
@@ -48,7 +50,8 @@ data class CleanupScan(@PrimaryKey val id:String,val account:String,val created:
     @ColumnInfo(defaultValue="'full'") val mode:String="full",
     @ColumnInfo(defaultValue="'{}'") val metrics:String="{}",
     @ColumnInfo(defaultValue="0") val elapsedMs:Long=0,
-    @ColumnInfo(defaultValue="2") val effectiveParallel:Int=2)
+    @ColumnInfo(defaultValue="2") val effectiveParallel:Int=2,
+    @ColumnInfo(defaultValue="'full'") val policy:String="full")
 @Entity(tableName="cleanup_scan_items",primaryKeys=["scanId","mediaId"],indices=[Index("scanId")])
 data class CleanupScanItem(val scanId:String,val mediaId:String,val done:Boolean=false)
 
@@ -61,6 +64,7 @@ interface HarborDao {
     @Upsert suspend fun putCleanupScanItems(items:List<CleanupScanItem>)
     @Upsert suspend fun putCleanupScanItem(item:CleanupScanItem)
     @Query("SELECT * FROM cleanup_scan_items WHERE scanId=:id ORDER BY rowid") suspend fun cleanupScanItems(id:String):List<CleanupScanItem>
+    @Query("SELECT * FROM cleanup_scan_items WHERE scanId=:id ORDER BY rowid") fun cleanupScanItemsFlow(id:String):Flow<List<CleanupScanItem>>
     @Query("SELECT COUNT(*) FROM cleanup_scan_items WHERE scanId=:id AND done=1") suspend fun cleanupChecked(id:String):Int
     @Query("SELECT * FROM media ORDER BY captured DESC, id") fun mediaFlow(): Flow<List<MediaEntry>>
     @Query("SELECT * FROM media ORDER BY captured DESC") suspend fun media(): List<MediaEntry>
@@ -103,7 +107,7 @@ interface HarborDao {
     @Query("UPDATE cleanups SET state='expired', reason=:reason WHERE account=:account AND state='ready'") suspend fun expireCleanup(account:String,reason:String="RECHECK_REQUIRED")
 }
 
-@Database(entities = [MediaEntry::class, BackupRecord::class, BackupJob::class, BackupItem::class, CleanupRecord::class,CleanupScan::class,CleanupScanItem::class], version = 3, exportSchema = true)
+@Database(entities = [MediaEntry::class, BackupRecord::class, BackupJob::class, BackupItem::class, CleanupRecord::class,CleanupScan::class,CleanupScanItem::class], version = 4, exportSchema = true)
 abstract class HarborDatabase : RoomDatabase() {
     abstract fun dao(): HarborDao
     companion object {
@@ -123,14 +127,23 @@ abstract class HarborDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE cleanup_scans ADD COLUMN effectiveParallel INTEGER NOT NULL DEFAULT 2")
             }
         }
-        fun open(context: Context) = Room.databaseBuilder(context, HarborDatabase::class.java, "picharbor.db").addMigrations(MIGRATION_1_2,MIGRATION_2_3).build()
+        val MIGRATION_3_4=object:androidx.room.migration.Migration(3,4) {
+            override fun migrate(db:androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE cleanup_scans ADD COLUMN policy TEXT NOT NULL DEFAULT 'full'")
+                db.execSQL("ALTER TABLE cleanups ADD COLUMN policy TEXT NOT NULL DEFAULT 'full'")
+                db.execSQL("ALTER TABLE cleanups ADD COLUMN scanId TEXT NOT NULL DEFAULT ''")
+                // Old results cannot be unambiguously assigned to a particular session.
+                db.execSQL("UPDATE cleanups SET state='expired',reason='RECHECK_REQUIRED' WHERE state='ready'")
+            }
+        }
+        fun open(context: Context) = Room.databaseBuilder(context, HarborDatabase::class.java, "picharbor.db").addMigrations(MIGRATION_1_2,MIGRATION_2_3,MIGRATION_3_4).build()
     }
 }
 
 object BackupPolicy {
     fun matches(media: MediaEntry, record: BackupRecord?) = record != null && record.remoteKey.isNotBlank() &&
         record.size == media.size && record.modified == media.modified && record.sha256.isNotBlank()
-    fun cleanupFresh(record: CleanupRecord, account: String, now: Long) = record.account == account &&
+    fun cleanupFresh(record: CleanupRecord, account: String, now: Long,policy:String="full") = record.account == account && record.policy==policy && CleanupPolicy.recognized(policy) &&
         record.state == "ready" && record.checkedAt <= now && now - record.checkedAt < 5 * 60_000
     val terminalItems = setOf("done", "exists", "filename_skipped", "failed", "cancelled")
 }

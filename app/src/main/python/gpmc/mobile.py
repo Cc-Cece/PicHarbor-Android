@@ -5,6 +5,7 @@ This module never deletes either local or remote media.
 """
 from contextlib import closing, contextmanager
 import hashlib
+import base64
 import json
 import os
 import re
@@ -441,32 +442,80 @@ class MobileService:
         if not key: return {"eligible": False, "reason": "REMOTE_MISSING", **digest}
         if item.get("check_mode") == "quick":
             return {"eligible": False, "found": True, "reason": "STATUS_ONLY", "remote_key": key, **digest}
-        with closing(sqlite3.connect(self.db_path)) as db, db:
-            row = db.execute("SELECT payload FROM cloud WHERE media_key=?", (key,)).fetchone()
-        if not row: return {"eligible": False, "reason": "CLOUD_ITEM_MISSING", **digest}
-        cloud = json.loads(row[0])
-        if not self.full_snapshot_id or cloud.get("snapshot_id") != self.full_snapshot_id or not 0 <= time.monotonic() - self.full_snapshot_at < 300:
-            return {"eligible": False, "reason": "CLOUD_STATE_UNKNOWN", **digest}
-        trash = cloud.get("trash")
-        if trash is None and cloud.get("trash_marker_absent") is True:
-            # Verified against this protocol: normal -> empty marker, trashed -> timestamp,
-            # restored -> empty marker. This applies only to a fresh COMPLETE snapshot.
-            trash = 0
-        if trash is None: return {"eligible": False, "reason": "CLOUD_TRASH_UNKNOWN", **digest}
-        if trash != 0: return {"eligible": False, "reason": "REMOTE_TRASHED", **digest}
-        if cloud["original"] is None: return {"eligible": False, "reason": "CLOUD_QUALITY_UNKNOWN", **digest}
-        if cloud["status"] != 100: return {"eligible": False, "reason": "CLOUD_PROCESSING", **digest}
-        if cloud["original"] is not True or cloud["size"] != digest["size"]:
-            return {"eligible": False, "reason": "ORIGINAL_UNCONFIRMED", **digest}
-        try:
-            accessible = self.original_access(key, digest["size"], callback)
-        except requests.exceptions.RequestException as error:
-            code = error_code(error)
-            if code == "LOGIN_REQUIRED": raise
-            return {"eligible": False, "reason": "RATE_LIMITED" if code == "RATE_LIMITED" else "ORIGINAL_NETWORK_ERROR", **digest}
-        if not accessible:
-            return {"eligible": False, "reason": "ORIGINAL_UNAVAILABLE", **digest}
-        return {"eligible": True, "reason": "", "remote_key": key, **digest}
+        state = item.get("check_cloud_state", True)
+        access = item.get("check_original_access", True)
+        if not isinstance(state, bool) or not isinstance(access, bool):
+            raise ValueError("INVALID_CHECK_POLICY")
+        policy = "full" if state and access else "state_only" if state else "access_only" if access else "basic"
+        if state:
+            with closing(sqlite3.connect(self.db_path)) as db, db:
+                row = db.execute("SELECT payload FROM cloud WHERE media_key=?", (key,)).fetchone()
+            if not row: return {"eligible": False, "reason": "CLOUD_ITEM_MISSING", **digest}
+            cloud = json.loads(row[0])
+            if not self.full_snapshot_id or cloud.get("snapshot_id") != self.full_snapshot_id or not 0 <= time.monotonic() - self.full_snapshot_at < 300:
+                return {"eligible": False, "reason": "CLOUD_STATE_UNKNOWN", **digest}
+            trash = cloud.get("trash")
+            if trash is None and cloud.get("trash_marker_absent") is True:
+                # Verified against this protocol: normal -> empty marker, trashed -> timestamp,
+                # restored -> empty marker. This applies only to a fresh COMPLETE snapshot.
+                trash = 0
+            if trash is None: return {"eligible": False, "reason": "CLOUD_TRASH_UNKNOWN", **digest}
+            if trash != 0: return {"eligible": False, "reason": "REMOTE_TRASHED", **digest}
+            if cloud["original"] is None: return {"eligible": False, "reason": "CLOUD_QUALITY_UNKNOWN", **digest}
+            if cloud["status"] != 100: return {"eligible": False, "reason": "CLOUD_PROCESSING", **digest}
+            if cloud["original"] is not True or cloud["size"] != digest["size"]:
+                return {"eligible": False, "reason": "ORIGINAL_UNCONFIRMED", **digest}
+        if access:
+            try:
+                accessible = self.original_access(key, digest["size"], callback)
+            except requests.exceptions.RequestException as error:
+                code = error_code(error)
+                if code == "LOGIN_REQUIRED": raise
+                return {"eligible": False, "reason": "RATE_LIMITED" if code == "RATE_LIMITED" else "ORIGINAL_NETWORK_ERROR", **digest}
+            if not accessible:
+                return {"eligible": False, "reason": "ORIGINAL_UNAVAILABLE", **digest}
+        return {"eligible": True, "reason": "", "remote_key": key, "policy": policy, **digest}
+
+    def account_profile(self, callback=None):
+        """Optional identity display, using only the existing Photos bearer token."""
+        self.check(callback)
+        def bounded(response, limit):
+            if response.status_code != 200: return None
+            data = bytearray()
+            for chunk in response.iter_content(8192):
+                self.check(callback)
+                data.extend(chunk)
+                if len(data) > limit: return None
+            return bytes(data)
+        with requests.Session() as session:
+            with session.get("https://openidconnect.googleapis.com/v1/userinfo",
+                    headers={"Authorization": "Bearer " + self.client.api.bearer_token},
+                    timeout=(3, 5), allow_redirects=False, stream=True) as response:
+                body = bounded(response, 65536)
+            if body is None: return {"available": False}
+            profile = json.loads(body)
+            subject = profile.get("sub")
+            if not isinstance(subject, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,255}", subject): return {"available": False}
+            email = profile.get("email")
+            if email is not None and (not isinstance(email, str) or email.strip().lower() != self.account): return {"available": False}
+            name = profile.get("name", "")
+            name = name.strip() if isinstance(name, str) else ""
+            if len(name) > 100 or any(ord(c) < 32 for c in name): name = ""
+            result = {"available": True, "account": self.account, "subject": subject, "name": name}
+            url = profile.get("picture", "")
+            parsed = urlparse(url) if isinstance(url, str) else None
+            if parsed and parsed.scheme == "https" and not parsed.username and not parsed.password and parsed.port in (None,443) and parsed.hostname and (parsed.hostname == "googleusercontent.com" or parsed.hostname.endswith(".googleusercontent.com")):
+                self.check(callback)
+                # No Authorization header, cookies, redirects or original URL in the result.
+                # Use a fresh session so the identity request cannot contribute cookies.
+                try:
+                    with requests.Session() as images:
+                        with images.get(url, timeout=(3,5), allow_redirects=False, stream=True) as response:
+                            image = bounded(response, 512 * 1024) if response.headers.get("Content-Type", "").lower().startswith("image/") else None
+                    if image: result["avatar_base64"] = base64.b64encode(image).decode("ascii")
+                except requests.exceptions.RequestException:
+                    pass
+            return result
 
 
     def dispatch(self, action, payload, bridge=None, callback=None):
@@ -499,6 +548,7 @@ class MobileService:
                 elif action == "reconcile": result = self.reconcile(values,callback)
                 elif action == "albums": result = {"albums": self.albums(callback)}
                 elif action == "verify_cleanup": result = self.verify_cleanup(values,bridge,callback)
+                elif action == "account_profile": result = self.account_profile(callback)
                 elif action == "fingerprint":
                     handle = bridge.open(values["uri"],values["name"])
                     try: result = self.hashes(str(handle.getPath()),callback)

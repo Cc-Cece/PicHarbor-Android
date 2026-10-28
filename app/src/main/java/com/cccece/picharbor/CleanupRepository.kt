@@ -15,7 +15,7 @@ import androidx.work.*
 import org.json.JSONObject
 import java.util.UUID
 
-data class CleanupProgress(val running:Boolean=false,val checked:Int=0,val total:Int=0,val message:String="",val id:String="",val state:String="",val account:String="",val mode:String="full",val metrics:String="{}",val elapsedMs:Long=0,val effectiveParallel:Int=2)
+data class CleanupProgress(val running:Boolean=false,val checked:Int=0,val total:Int=0,val message:String="",val id:String="",val state:String="",val account:String="",val mode:String="full",val metrics:String="{}",val elapsedMs:Long=0,val effectiveParallel:Int=2,val policy:String="full")
 @OptIn(ExperimentalCoroutinesApi::class)
 class CleanupRepository(private val graph:AppGraph) {
     private val cancelled=java.util.concurrent.atomic.AtomicBoolean(false)
@@ -27,10 +27,18 @@ class CleanupRepository(private val graph:AppGraph) {
             "queued"->"检查已排队，等待开始";"syncing"->"正在核对云端备份";"running"->"正在检查 ${scan.checked} / ${scan.total} 项"
             "waiting"->"进度已保存，等待继续";"cancelling"->"正在停止检查";"cancelled"->"已停止检查，手机原件保留"
             "completed"->"检查已完成，请查看核验结果";"failed"->Messages.error(scan.error);else->""
-        },scan.id,scan.state,scan.account,scan.mode,scan.metrics,scan.elapsedMs,scan.effectiveParallel)
+        },scan.id,scan.state,scan.account,scan.mode,scan.metrics,scan.elapsedMs,scan.effectiveParallel,scan.policy)
     }.stateIn(graph.scope,SharingStarted.Eagerly,CleanupProgress())
 
     fun cancel(){cancelled.set(true);graph.scope.launch{stopAndWait()}}
+    suspend fun changePolicy(change:PendingCleanupPolicy,acknowledgement:String="")=enqueueLock.withLock {
+        val current=graph.preferences.get()
+        if(graph.switching.value||current.account!=change.account||current.cleanupPolicy!=change.previous)throw EngineFailure("ACCOUNT_CHANGED")
+        if(graph.dao.latestCleanupScan(current.account)?.state in activeStates)throw EngineFailure("CLEANUP_RUNNING")
+        if(change.desired.weakerThan(current.cleanupPolicy)&&acknowledgement!=CleanupPolicy.ACKNOWLEDGEMENT)throw EngineFailure("RISK_CONFIRMATION_REQUIRED")
+        graph.dao.expireCleanup(current.account,"POLICY_CHANGED")
+        graph.preferences.cleanupPolicy(change.desired)
+    }
     suspend fun stopAndWait() {
         cancelled.set(true)
         val scan=graph.dao.latestCleanupScan(graph.preferences.get().account)
@@ -58,7 +66,7 @@ class CleanupRepository(private val graph:AppGraph) {
         val records=graph.dao.backups(account).associateBy{it.mediaId}
         val chosen=ids?.toSet()
         val candidates=graph.dao.media().filter{chosen?.contains(it.id)?: (BackupPolicy.matches(it,records[it.id])||(mode=="quick"&&settings.includes(it)))}
-        val scan=CleanupScan(UUID.randomUUID().toString(),account,System.currentTimeMillis(),total=candidates.size,mode=mode,effectiveParallel=settings.cleanupConcurrency)
+        val scan=CleanupScan(UUID.randomUUID().toString(),account,System.currentTimeMillis(),total=candidates.size,mode=mode,effectiveParallel=settings.cleanupConcurrency,policy=if(mode=="quick")"quick" else settings.cleanupPolicy.id)
         graph.database.withTransaction {
             if(mode=="full")graph.dao.expireCleanup(account)
             graph.dao.putCleanupScan(scan)
@@ -88,6 +96,8 @@ class CleanupRepository(private val graph:AppGraph) {
         if(scan.state !in activeStates)return@withLock true
         if(scan.state=="cancelling"){graph.dao.putCleanupScan(scan.copy(state="cancelled"));return@withLock true}
         if(scan.account!=graph.preferences.get().account||graph.switching.value){graph.dao.putCleanupScan(scan.copy(state="cancelled",error="ACCOUNT_CHANGED"));return@withLock true}
+        if(scan.mode=="full"&&scan.policy!=graph.preferences.get().cleanupPolicy.id){graph.dao.expireCleanup(scan.account,"POLICY_CHANGED");graph.dao.putCleanupScan(scan.copy(state="cancelled",error="POLICY_CHANGED"));return@withLock true}
+        val verification=CleanupPolicy.fromId(scan.policy)
         cancelled.set(false)
         fun stopped()=cancelled.get()||externalCancelled()||graph.switching.value
         val started=android.os.SystemClock.elapsedRealtime()
@@ -122,7 +132,7 @@ class CleanupRepository(private val graph:AppGraph) {
         try {
             val account=graph.ensureAccount()
             val records=graph.dao.backups(account).associateBy{it.mediaId}
-            if(scan.mode=="full")syncCloud() else checkpoint()
+            if(scan.mode=="full"&&verification.cloudState)syncCloud() else checkpoint()
             suspend fun persist(task:CleanupScanItem,result:CleanupRecord) = stateLock.withLock {
                 val saveStart=android.os.SystemClock.elapsedRealtime()
                 graph.database.withTransaction {
@@ -138,9 +148,9 @@ class CleanupRepository(private val graph:AppGraph) {
                 currentCoroutineContext().ensureActive()
                 if(stopped())return
                 val media=graph.dao.media(task.mediaId)
-                val evidenceId=java.security.MessageDigest.getInstance("SHA-256").digest("$account|${task.mediaId}".toByteArray()).joinToString(""){"%02x".format(it)}.let{if(scan.mode=="quick")"quick:$it" else it}
+                val evidenceId=java.security.MessageDigest.getInstance("SHA-256").digest("$account|${task.mediaId}".toByteArray()).joinToString(""){"%02x".format(it)}.let{if(scan.mode=="quick")"quick:${scan.id}:$it" else "${scan.id}:$it"}
                 if(media==null){
-                    persist(task,CleanupRecord(evidenceId,account,task.mediaId,records[task.mediaId]?.size?:0,"","",System.currentTimeMillis(),"blocked","FILE_ACCESS"))
+                    persist(task,CleanupRecord(evidenceId,account,task.mediaId,records[task.mediaId]?.size?:0,"","",System.currentTimeMillis(),"blocked","FILE_ACCESS",policy=scan.policy,scanId=scan.id))
                     return
                 }
                 if(task.done) {
@@ -148,23 +158,24 @@ class CleanupRepository(private val graph:AppGraph) {
                     if(scan.mode=="quick"||previous?.state=="blocked")return
                 }
                 val known=records[media.id]
-                var result=CleanupRecord(evidenceId,account,media.id,media.size,"","",System.currentTimeMillis(),"blocked","CLOUD_STATE_UNKNOWN")
+                var result=CleanupRecord(evidenceId,account,media.id,media.size,"","",System.currentTimeMillis(),"blocked","CLOUD_STATE_UNKNOWN",policy=scan.policy,scanId=scan.id)
                 for(attempt in 0..settings.cleanupRetries) {
                     if(stopped())return
                     try {
                         if(graph.preferences.get().account!=account)throw EngineFailure("ACCOUNT_CHANGED")
                         val before=graph.media.current(media)?:throw EngineFailure("FILE_ACCESS")
                         val value=JSONObject().put("_account",account).put("uri",media.id).put("name",media.name).put("check_mode",scan.mode)
+                            .put("check_cloud_state",verification.cloudState).put("check_original_access",verification.originalAccess)
                         if(known!=null)value.put("sha256",known.sha256)
                         val verified=graph.engine.call("verify_cleanup",value,EngineCallback(::stopped,readGate=readers))
                         checkpoint(verified.optJSONObject("_metrics"))
                         val unchanged=graph.media.current(media)==before&&before.first==media.size&&before.second==media.modified
-                        val eligible=scan.mode=="full"&&verified.optBoolean("eligible")&&unchanged
+                        val eligible=scan.mode=="full"&&verified.optBoolean("eligible")&&verified.optString("policy")==scan.policy&&unchanged
                         val found=scan.mode=="quick"&&verified.optBoolean("found")&&unchanged
                         result=result.copy(sha256=verified.optString("sha256"),remoteKey=verified.optString("remote_key"),checkedAt=System.currentTimeMillis(),
                             state=if(eligible)"ready" else if(found)"quick_found" else "blocked",
                             reason=if(eligible)"" else if(!unchanged)"SOURCE_CHANGED" else verified.optString("reason").ifBlank{"CLOUD_STATE_UNKNOWN"})
-                        if(eligible&&known==null)graph.dao.putBackup(BackupRecord(account,media.id,verified.getString("sha1"),result.sha256,result.remoteKey,media.size,media.modified,"original","content_exists",System.currentTimeMillis()))
+                        if(eligible&&verification.complete&&known==null)graph.dao.putBackup(BackupRecord(account,media.id,verified.getString("sha1"),result.sha256,result.remoteKey,media.size,media.modified,"original","content_exists",System.currentTimeMillis()))
                     } catch(error:Exception) {
                         if(error is CancellationException)throw error
                         val failure=error as? EngineFailure
@@ -188,7 +199,7 @@ class CleanupRepository(private val graph:AppGraph) {
                 val running=mutableListOf<Deferred<Unit>>()
                 while((next<tasks.size||running.isNotEmpty())&&!stopped()) {
                     currentCoroutineContext().ensureActive()
-                    val refresh=scan.mode=="full"&&android.os.SystemClock.elapsedRealtime()-syncedAt>240000
+                    val refresh=scan.mode=="full"&&verification.cloudState&&android.os.SystemClock.elapsedRealtime()-syncedAt>240000
                     if(refresh&&running.isEmpty()){syncCloud();syncedAt=android.os.SystemClock.elapsedRealtime();continue}
                     if(!refresh)while(next<tasks.size&&running.size<policy.limit&&!stopped()) {
                         val task=tasks[next++]
@@ -219,18 +230,20 @@ class CleanupRepository(private val graph:AppGraph) {
     suspend fun prepareDelete():List<CleanupRecord> {
         val account=graph.ensureAccount()
         if(graph.dao.latestCleanupScan(account)?.state in activeStates)throw EngineFailure("CLEANUP_RUNNING")
-        val ready=graph.dao.readyCleanup(account).filter{BackupPolicy.cleanupFresh(it,account,System.currentTimeMillis())}.take(100)
+        val ready=graph.dao.readyCleanup(account).filter{BackupPolicy.cleanupFresh(it,account,System.currentTimeMillis(),graph.preferences.get().cleanupPolicy.id)}.take(100)
         val checked=ArrayList<CleanupRecord>()
         for(record in ready) {
             val media=graph.dao.media(record.mediaId)?:continue
             val fingerprint=graph.engine.call("fingerprint",JSONObject().put("uri",media.id).put("name",media.name))
-            if(fingerprint.getString("sha256")==record.sha256&&fingerprint.getLong("size")==record.bytes&&BackupPolicy.cleanupFresh(record,account,System.currentTimeMillis()))checked+=record
+            if(graph.preferences.get().account==account&&fingerprint.getString("sha256")==record.sha256&&fingerprint.getLong("size")==record.bytes&&BackupPolicy.cleanupFresh(record,account,System.currentTimeMillis(),graph.preferences.get().cleanupPolicy.id))checked+=record
             else graph.dao.putCleanup(record.copy(state="expired",reason="SOURCE_CHANGED"))
         }
         return checked
     }
     suspend fun systemRequest(records:List<CleanupRecord>):IntentSender? {
         if(Build.VERSION.SDK_INT<30)return null
+        val settings=graph.preferences.get()
+        require(records.all{BackupPolicy.cleanupFresh(it,settings.account,System.currentTimeMillis(),settings.cleanupPolicy.id)})
         val uris=records.filter{it.mediaId.startsWith("content://media/")}.map { record ->
             graph.media.deleteUri(graph.dao.media(record.mediaId)?:throw EngineFailure("FILE_ACCESS"))
         }.distinct()
@@ -242,7 +255,7 @@ class CleanupRepository(private val graph:AppGraph) {
         for(record in records) {
             if(record.account!=account)continue
             val media=graph.dao.media(record.mediaId)?:continue
-            if(!media.id.startsWith("content://media/")&&systemApproved&&BackupPolicy.cleanupFresh(record,account,System.currentTimeMillis())) {
+            if(!media.id.startsWith("content://media/")&&systemApproved&&BackupPolicy.cleanupFresh(record,account,System.currentTimeMillis(),graph.preferences.get().cleanupPolicy.id)) {
                 try {
                     val fresh=graph.engine.call("fingerprint",JSONObject().put("uri",media.id).put("name",media.name))
                     if(fresh.optString("sha256")==record.sha256)DocumentFile.fromSingleUri(graph.app,Uri.parse(media.id))?.takeIf{it.canWrite()}?.delete()
@@ -257,7 +270,7 @@ class CleanupRepository(private val graph:AppGraph) {
     /** Android 10: caller catches RecoverableSecurityException and asks for its actionIntent. */
     suspend fun deleteLegacy(record:CleanupRecord) {
         val account=graph.preferences.get().account
-        require(BackupPolicy.cleanupFresh(record,account,System.currentTimeMillis()))
+        require(BackupPolicy.cleanupFresh(record,account,System.currentTimeMillis(),graph.preferences.get().cleanupPolicy.id))
         val media=graph.dao.media(record.mediaId)?:return
         val fresh=graph.engine.call("fingerprint",JSONObject().put("uri",media.id).put("name",media.name))
         require(fresh.optString("sha256")==record.sha256)

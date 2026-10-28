@@ -1,19 +1,74 @@
+# ====================================================================
+# Android & Gradle Build Artifacts
+# ====================================================================
 .gradle/
+build/
 **/build/
-local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+captures/
+.externalNativeBuild/
+.cxx/
+*.hprof
+
+# Kotlin compiler cache
+.kotlin/
+
+# ====================================================================
+# Android Studio & IDE Configurations
+# ====================================================================
 .idea/
 *.iml
-__pycache__/
-.venv/
+*.iws
+*.ipr
+.vscode/
+
+# ====================================================================
+# Local Configuration & Sensitive Credentials / Keystores
+# ====================================================================
+local.properties
+diagnostic-auth.txt
 *.jks
 *.keystore
-diagnostic-auth.txt
-dist/
-*.log
-.gpmc/
-demo/node_modules/
-demo/test-results/
-
 *.dpapi
 *.p12
 *.pfx
+*.key
+*.pem
+
+# ====================================================================
+# Python / Chaquopy Runtime & Virtual Environments
+# ====================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.coverage
+htmlcov/
+.gpmc/
+
+# ====================================================================
+# Output & Release Packaging
+# ====================================================================
+dist/
+*.log
+
+# ====================================================================
+# OS & System Files
+# ====================================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+[Dd]esktop.ini

@@ -2,6 +2,8 @@ package com.cccece.picharbor
 
 import android.net.Uri
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -10,10 +12,14 @@ import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 
 @Composable
 fun BackupListScreen(vm:HarborViewModel,data:HarborUiData) {
@@ -32,21 +38,24 @@ fun BackupListScreen(vm:HarborViewModel,data:HarborUiData) {
             if(count==0)item{EmptyState(if(kind=="attention")"暂时没有需要处理的项目" else "这里暂时没有照片",if(kind=="pending")"只显示所选备份文件夹中需要检查的照片和视频。" else "此列表仅针对当前备份账号。")}
             if(kind=="attention")items(data.attentionItems,key={it.id}) { task ->
                 val local=data.media.find{it.id==task.mediaId}
-                BackupListRow(task.name,Messages.error(task.error).let{if(task.state=="album_pending")"照片已备份，相册归类需要重试" else it},local) {
+                MediaStatusRow(task.name,Messages.error(task.error).let{if(task.state=="album_pending")"照片已备份，相册归类需要重试" else it},local) {
                     if(local!=null)vm.open(local) else vm.showJob(task.jobId)
                 }
             } else items(media,key={it.id}) { item ->
-                BackupListRow(item.name,"${item.folderName} · ${formatSize(item.size)}",item){vm.open(item)}
+                MediaStatusRow(item.name,"${item.folderName} · ${formatSize(item.size)}",item){vm.open(item)}
             }
         }
     }
 }
 
 @Composable
-private fun BackupListRow(name:String,description:String,media:MediaEntry?,onClick:()->Unit) {
+fun MediaStatusRow(name:String,description:String,media:MediaEntry?,onClick:()->Unit) {
     Row(Modifier.fillMaxWidth().clickable(onClick=onClick).padding(horizontal=20.dp,vertical=10.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(14.dp)) {
-        if(media!=null)AsyncImage(Uri.parse(media.id),null,Modifier.size(60.dp),contentScale=ContentScale.Crop)
-        else Icon(Icons.Outlined.BrokenImage,null,Modifier.size(60.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant)
+        Box(Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh),contentAlignment=Alignment.Center) {
+            if(media!=null)AsyncImage(ImageRequest.Builder(LocalContext.current).data(Uri.parse(media.id)).size(160).memoryCacheKey("${media.id}:${media.modified}:${media.size}").build(),null,Modifier.fillMaxSize(),contentScale=ContentScale.Crop,error=rememberVectorPainter(Icons.Outlined.BrokenImage))
+            else Icon(Icons.Outlined.BrokenImage,null,Modifier.size(28.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant)
+            if(media?.video==true)Icon(Icons.Outlined.PlayCircle,null,Modifier.align(Alignment.BottomEnd).size(24.dp),tint=MaterialTheme.colorScheme.primary)
+        }
         Column(Modifier.weight(1f)) {
             Text(name,style=MaterialTheme.typography.bodyMedium,maxLines=2)
             Text(description,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)

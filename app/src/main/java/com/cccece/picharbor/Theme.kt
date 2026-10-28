@@ -6,6 +6,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
@@ -38,5 +39,10 @@ fun PicHarborTheme(settings:HarborSettings,content:@Composable ()->Unit) {
             }
         }
     }
-    MaterialTheme(colorScheme=scheme,shapes=Shapes(extraSmall=RoundedCornerShape(8.dp),small=RoundedCornerShape(12.dp),medium=RoundedCornerShape(20.dp),large=RoundedCornerShape(26.dp),extraLarge=RoundedCornerShape(30.dp)),content=content)
+    MaterialTheme(colorScheme=scheme,shapes=Shapes(extraSmall=RoundedCornerShape(8.dp),small=RoundedCornerShape(12.dp),medium=RoundedCornerShape(20.dp),large=RoundedCornerShape(26.dp),extraLarge=RoundedCornerShape(30.dp))) {
+        // MaterialTheme defines the palette, but does not set LocalContentColor.
+        // Pages draw their own background after the navigation refactor, so give
+        // unstyled text/icons the matching foreground without changing layout.
+        CompositionLocalProvider(LocalContentColor provides scheme.onBackground,content=content)
+    }
 }

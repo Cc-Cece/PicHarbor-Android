@@ -30,6 +30,28 @@ class PolicyTest {
         assertFalse(settings.copy(videos=false).includes(media.copy(mime="video/mp4")))
         assertTrue(settings.copy(folders=setOf("camera")).includes(media.copy(source="tree")))
     }
+    @Test fun allFoldersIncludesFutureFoldersWithoutExplicitSelection() {
+        val settings=HarborSettings(folders=emptySet(),allFolders=true)
+        assertTrue(settings.includes(media.copy(folderKey="new-folder",folderName="New folder")))
+        assertTrue(settings.includes(media.copy(folderKey="authorized-tree",folderName="SD",source="tree")))
+        assertTrue(settings.folders.isEmpty())
+        assertFalse(HarborSettings(folders=emptySet()).includes(media))
+    }
+    @Test fun allFoldersStillRespectsVideoPreference() {
+        val settings=HarborSettings(allFolders=true,videos=false)
+        val video=media.copy(mime="video/mp4",folderKey="new-folder")
+        assertTrue(settings.includesFolder(video))
+        assertFalse(settings.includes(video))
+        assertTrue(settings.copy(videos=true).includes(video))
+    }
+    @Test fun disablingAllFoldersRestoresPreviousChoices() {
+        val original=HarborSettings(folders=setOf("@camera","selected"))
+        val restored=original.copy(allFolders=true).copy(allFolders=false)
+        assertEquals(original,restored)
+        assertTrue(restored.includes(media))
+        assertTrue(restored.includes(media.copy(folderKey="selected",folderName="Selected")))
+        assertFalse(restored.includes(media.copy(folderKey="new",folderName="New")))
+    }
     @Test fun nextDailyCheckRollsToTomorrowAfterChosenTime() {
         val now=ZonedDateTime.of(2026,10,18,3,0,0,0,ZoneId.of("Asia/Shanghai"))
         assertEquals(23*3600000L,SchedulePolicy.nextDelay("02:00",now))

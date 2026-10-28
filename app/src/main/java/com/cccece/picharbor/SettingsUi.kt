@@ -34,7 +34,7 @@ fun SettingsScreen(vm:HarborViewModel,data:HarborUiData) {
             }
             SectionLabel("备份内容")
             SettingGroup {
-                SettingsRow("备份文件夹","选择想自动备份的内容",Icons.Outlined.Folder,onClick={vm.navigate("folders")})
+                SettingsRow("备份文件夹",if(s.allFolders)"所有文件夹 · 自动包含新文件夹" else "选择想自动备份的内容",Icons.Outlined.Folder,onClick={vm.navigate("folders")})
                 ToggleRow("备份视频","照片之外，也保存精彩片段",s.videos,Icons.Outlined.VideoLibrary,!vm.busy){vm.setBoolean("videos",it)}
                 SettingsRow("相册归类",albumLabel(s),Icons.Outlined.Collections,onClick={vm.sheet="album"})
             }
@@ -58,18 +58,22 @@ fun FoldersScreen(vm:HarborViewModel,data:HarborUiData,onPermissions:()->Unit,on
     LazyColumn(contentPadding=PaddingValues(bottom=24.dp)) {
         item{PageTitle("备份文件夹",vm)}
         item{Column(Modifier.padding(horizontal=20.dp)){Text("只备份你想留住的。",style=MaterialTheme.typography.headlineLarge,modifier=Modifier.padding(vertical=16.dp));Helper("开启的文件夹会自动检查新增内容。关闭后，云端已有备份仍会保留。")}}
+        item{Column(Modifier.padding(horizontal=20.dp)){
+            ToggleRow("备份所有文件夹","自动包含新发现的文件夹",data.settings.allFolders,Icons.Outlined.FolderCopy,!vm.busy,vm::setAllFolders)
+            Helper("仅包含已授权访问的照片和视频。其他文件夹或 SD 卡仍需先授权。关闭此选项后恢复原来的文件夹选择。")
+        }}
         if(!vm.graph.media.hasAccess())item{Box(Modifier.padding(horizontal=20.dp)){SettingsRow("允许访问手机照片","授权后可发现相机、截图等文件夹",Icons.Outlined.PhotoLibrary,onClick=onPermissions)}}
-        if(folders.none{it.value.first().folderName.equals("Camera",true)})item{Box(Modifier.padding(horizontal=20.dp)){ToggleRow("相机","拍摄的新照片将从这里开始备份","@camera" in data.settings.folders,Icons.Outlined.CameraAlt,!vm.busy){vm.folder("@camera",it)}}}
+        if(folders.none{it.value.first().folderName.equals("Camera",true)})item{Box(Modifier.padding(horizontal=20.dp)){ToggleRow("相机","拍摄的新照片将从这里开始备份",data.settings.allFolders||"@camera" in data.settings.folders,Icons.Outlined.CameraAlt,!vm.busy&&!data.settings.allFolders){vm.folder("@camera",it)}}}
         items(folders,key={it.key}) { entry ->
-            val media=entry.value.first();val chosen=entry.key in data.settings.folders||("@camera" in data.settings.folders&&media.folderName.equals("Camera",true)&&media.source=="media")
-            Box(Modifier.padding(horizontal=20.dp,vertical=2.dp)) {ToggleRow(media.folderName,"${entry.value.size} 项 · ${formatSize(entry.value.sumOf{it.size})}",chosen,if(media.source=="media")Icons.Outlined.Folder else Icons.Outlined.SdStorage,!vm.busy){vm.folder(entry.key,it)}}
+            val media=entry.value.first();val chosen=data.settings.includesFolder(media)
+            Box(Modifier.padding(horizontal=20.dp,vertical=2.dp)) {ToggleRow(media.folderName,"${entry.value.size} 项 · ${formatSize(entry.value.sumOf{it.size})}",chosen,if(media.source=="media")Icons.Outlined.Folder else Icons.Outlined.SdStorage,!vm.busy&&!data.settings.allFolders){vm.folder(entry.key,it)}}
         }
         val lostTrees=data.settings.trees.filter{tree->folders.none{it.key==tree}}
         items(lostTrees){tree->Box(Modifier.padding(horizontal=20.dp)){SettingsRow("已授权文件夹暂不可用","可能为空、存储卡已拔出或权限失效",Icons.Outlined.SdStorage,onClick={vm.sheet="sd"})}}
         item{Column(Modifier.padding(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
             OutlinedButton(onClick={vm.sheet="sd"},modifier=Modifier.fillMaxWidth()){Icon(Icons.Outlined.CreateNewFolder,null);Spacer(Modifier.width(8.dp));Text("添加文件夹 / SD 卡")}
             if(!data.settings.onboarded)Button(onClick=vm::finishSetup,enabled=!vm.busy&&data.settings.account.isNotEmpty(),modifier=Modifier.fillMaxWidth()){Text("开启自动备份")}
-            else FilledTonalButton(onClick={vm.start()},enabled=!vm.busy,modifier=Modifier.fillMaxWidth()){Text("备份已选文件夹")}
+            else FilledTonalButton(onClick={vm.start()},enabled=!vm.busy,modifier=Modifier.fillMaxWidth()){Text(if(data.settings.allFolders)"备份所有文件夹" else "备份已选文件夹")}
             Helper("默认只选择相机，其他内容由你决定。授权失效时会停止读取，不会自动删除文件。",Icons.Outlined.Security)
         }}
     }
@@ -113,6 +117,8 @@ fun AdvancedScreen(vm:HarborViewModel,data:HarborUiData,onExport:()->Unit) {
                 SettingsRow("空间检查速度","同时检查 ${data.settings.cleanupConcurrency} 项 · 下次检查生效",Icons.Outlined.Speed,onClick={vm.sheet="cleanup-speed"})
             }
             SectionLabel("诊断")
+            SettingGroup {SettingsRow("空间检查流程",data.settings.cleanupPolicy.label,Icons.Outlined.Security,onClick={vm.navigate("cleanup-policy")})}
+            if(!data.settings.cleanupPolicy.complete)Helper("已降低核验强度。可能在云端原件不可用或状态未确认时，仍允许移除手机文件。",Icons.Outlined.WarningAmber)
             SettingGroup {SettingsRow("检查账号连接","确认可以继续备份",Icons.Outlined.Security,onClick=vm::checkAccount);SettingsRow("导出诊断报告","不包含密码或登录凭据",Icons.Outlined.FileDownload,onClick=onExport)}
             Helper("设备厂商可能限制后台运行。应用会保存进度，并在允许执行时继续。")
         }
@@ -152,14 +158,14 @@ fun CleanupScreen(vm:HarborViewModel,data:HarborUiData,onCleanup:()->Unit) {
     val now by rememberCleanupClock()
     val context=LocalContext.current
     val candidates=data.media.filter{data.backed(it)}
-    val ready=data.cleanups.filter{BackupPolicy.cleanupFresh(it,data.settings.account,now)}
-    val blocked=data.cleanups.filter{it.state=="blocked"&&!it.id.startsWith("quick:")}.distinctBy{it.mediaId}
+    val ready=data.cleanups.filter{BackupPolicy.cleanupFresh(it,data.settings.account,now,data.settings.cleanupPolicy.id)}
+    val blocked=data.cleanups.filter{it.state=="blocked"&&it.scanId==data.cleanup.id&&data.cleanup.mode=="full"}.distinctBy{it.mediaId}
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         PageTitle("释放手机空间",vm){IconButton(onClick={vm.sheet="cleanup-speed"}){Icon(Icons.Outlined.Speed,"空间检查速度")}}
         Column(Modifier.padding(horizontal=24.dp),horizontalAlignment=Alignment.CenterHorizontally) {
             EmptyState("给手机，留点新空间。","只移除手机原件，保留 Google 相册备份。",Icons.Outlined.AutoAwesome)
             Text(formatSize(ready.sumOf{it.bytes}),style=MaterialTheme.typography.displayMedium,color=MaterialTheme.colorScheme.primary)
-            Text(if(data.cleanup.running)"已检查 ${data.cleanup.checked} / ${data.cleanup.total} 项，检查完成后可确认清理" else if(ready.isNotEmpty())"${ready.size} 项已核验，可由你确认清理" else "${candidates.size} 个已备份项目（${formatSize(candidates.sumOf{it.size})}）待核验",style=MaterialTheme.typography.bodyMedium,modifier=Modifier.padding(vertical=12.dp))
+            Text(if(data.cleanup.running)"已检查 ${data.cleanup.checked} / ${data.cleanup.total} 项，检查完成后可确认清理" else if(ready.isNotEmpty())if(data.settings.cleanupPolicy.complete)"${ready.size} 项已核验，可由你确认清理" else "${ready.size} 项基础匹配通过，请留意跳过的检查" else "${candidates.size} 个已备份项目（${formatSize(candidates.sumOf{it.size})}）待核验",style=MaterialTheme.typography.bodyMedium,modifier=Modifier.padding(vertical=12.dp))
             if(data.cleanup.running) {
                 HarborProgress(if(data.cleanup.total>0)data.cleanup.checked.toFloat()/data.cleanup.total else 0f,modifier=Modifier.fillMaxWidth())
                 Text("${data.cleanup.checked} / ${data.cleanup.total} · ${data.cleanup.message}",style=MaterialTheme.typography.bodySmall,modifier=Modifier.padding(vertical=12.dp))
@@ -168,7 +174,8 @@ fun CleanupScreen(vm:HarborViewModel,data:HarborUiData,onCleanup:()->Unit) {
             } else if(data.cleanup.message.isNotEmpty())Text(data.cleanup.message,style=MaterialTheme.typography.bodySmall)
             if(data.cleanup.mode=="quick")Helper("快速检查只确认云端是否找到相同内容，不代表已满足清理条件。释放空间前仍需完整核验。")
             if(data.cleanup.running)Text("最多同时检查 ${data.cleanup.effectiveParallel} 项",style=MaterialTheme.typography.bodySmall)
-            Helper("先核对内容、云端状态与原件可访问性。无法确认的项目会保留，不会完整回下载文件。",Icons.Outlined.Security)
+            Helper(if(data.settings.cleanupPolicy.complete)"先核对内容、云端状态与原件可访问性。无法确认的项目会保留，不会完整回下载文件。" else "按你选择的流程检查；已开启的检查失败时仍会保留文件，不会自动跳过。",Icons.Outlined.Security)
+            if(!data.settings.cleanupPolicy.complete)CleanupPolicyNotice(data.settings.cleanupPolicy)
             Helper("清理后仍可在 Google 相册查看；其他本地图库可能不再显示这些内容。",Icons.Outlined.PhotoLibrary)
             Helper("清理只在你主动确认后进行，不会在备份后自动删除。",Icons.Outlined.Info)
             if(ready.isNotEmpty()&&!data.cleanup.running)Button(onClick={vm.sheet="cleanup-confirm"},enabled=!vm.busy&&data.activeJob.isEmpty(),modifier=Modifier.fillMaxWidth()){Text("释放 ${formatSize(ready.take(100).sumOf{it.bytes})} 空间")}
@@ -176,7 +183,7 @@ fun CleanupScreen(vm:HarborViewModel,data:HarborUiData,onCleanup:()->Unit) {
             OutlinedButton(onClick={vm.verifyCleanup(quick=true)},enabled=!vm.busy&&!data.cleanup.running&&data.settings.account.isNotEmpty()&&data.activeJob.isEmpty(),modifier=Modifier.fillMaxWidth().padding(top=8.dp)){Text("快速检查备份状态")}
             Text("快速检查所选文件夹和已有备份记录中的本地文件，不删除照片。",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=8.dp))
             if(!androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled())TextButton(onClick={context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE,context.packageName))}){Text("允许进度与完成通知")}
-            TextButton(onClick={vm.sheet="cleanup-list"}){Text("查看项目与未清理原因")}
+            TextButton(onClick={vm.navigate("cleanup-results")}){Text("查看项目与未清理原因")}
             if(data.cleanup.id.isNotEmpty())TextButton(onClick={vm.sheet="cleanup-timing"}){Text("查看检查耗时")}
             if(blocked.isNotEmpty())Text("${blocked.size} 项暂未满足清理条件，手机原件已保留。",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(20.dp))

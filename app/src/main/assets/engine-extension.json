@@ -1,10 +1,10 @@
 {
-  "version": "1.0.4",
+  "version": "1.0.7",
   "note": "Only new mobile extensions; all 31 original files remain unchanged.",
   "files": [
     {
       "path": "gpmc/mobile.py",
-      "sha256": "6bc5f989f794d0b228426437e2be07e14f8115ba8384807761eb74ff94e6f75a"
+      "sha256": "7ef15b20172096ef3269fec27f4ad66aba372ab1a0ea7499cc14b018c00a6105"
     },
     {
       "path": "picharbor_engine.py",
