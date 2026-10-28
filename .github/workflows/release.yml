@@ -1,0 +1,200 @@
+name: Release
+
+# Build the release APK and publish a GitHub Release when a version tag (v*) is pushed.
+# Reference: desktop/.github/workflows/release.yml & tools/build-release.ps1
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.8, defaults to current ref if omitted)'
+        required: false
+        type: string
+
+permissions:
+  contents: write # required to create the GitHub Release and upload assets
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build release APK + publish release (arm64-v8a)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Accept Android SDK licenses
+        run: |
+          yes | sdkmanager --licenses 2>/dev/null || true
+
+      - name: Verify Python engine baseline
+        run: python tools/verify_engine.py
+
+      - name: Configure release signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.PICHARBOR_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.PICHARBOR_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.PICHARBOR_KEY_PASSWORD }}
+        run: |
+          KEYSTORE_DIR="$RUNNER_TEMP/keystore"
+          mkdir -p "$KEYSTORE_DIR"
+          KEYSTORE_PATH="$KEYSTORE_DIR/picharbor-release.jks"
+
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "Using release signing keystore from repository secrets."
+            echo "$KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_PATH"
+            STORE_PASS="$STORE_PASSWORD"
+            KEY_PASS="${KEY_PASSWORD:-$STORE_PASSWORD}"
+          else
+            echo "::warning::No PICHARBOR_KEYSTORE_BASE64 secret found. Generating temporary signing key for CI release."
+            TEMP_PASS="picharbor-temp-ci-signing-key"
+            STORE_PASS="$TEMP_PASS"
+            KEY_PASS="$TEMP_PASS"
+            keytool -genkeypair \
+              -keystore "$KEYSTORE_PATH" \
+              -storetype JKS \
+              -alias picharbor \
+              -keyalg RSA \
+              -keysize 3072 \
+              -sigalg SHA256withRSA \
+              -validity 10000 \
+              -dname "CN=cc_cece,O=PicHarbor" \
+              -storepass "$TEMP_PASS" \
+              -keypass "$TEMP_PASS" \
+              -noprompt
+          fi
+
+          echo "PICHARBOR_KEYSTORE=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+          echo "::add-mask::$STORE_PASS"
+          echo "PICHARBOR_STORE_PASSWORD=$STORE_PASS" >> "$GITHUB_ENV"
+          echo "::add-mask::$KEY_PASS"
+          echo "PICHARBOR_KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
+
+      - name: Run unit tests
+        run: ./gradlew testReleaseUnitTest --console=plain
+
+      - name: Build release APK (arm64-v8a)
+        run: |
+          BUILD_PYTHON=$(which python3)
+          ./gradlew assembleRelease "-PbuildPython=$BUILD_PYTHON" --console=plain
+
+      - name: Inspect release APK integrity
+        run: python tools/inspect_release.py
+
+      - name: Package release artifacts
+        run: python tools/package-release.py
+
+      - name: Compute SHA-256 checksums & prepare release notes
+        id: prepare_notes
+        run: |
+          cd dist
+          APK_FILE=$(ls PicHarbor-*-arm64.apk | head -n 1)
+          if [ -z "$APK_FILE" ]; then
+            echo "::error::No release APK found in dist/"
+            exit 1
+          fi
+
+          # Generate standard sha256 checksum file for the APK
+          sha256sum "$APK_FILE" > "${APK_FILE}.sha256"
+          APK_HASH=$(cut -d ' ' -f 1 "${APK_FILE}.sha256")
+
+          SRC_FILE=$(ls PicHarbor-*-source.zip 2>/dev/null | head -n 1)
+          SRC_HASH=""
+          if [ -n "$SRC_FILE" ]; then
+            SRC_HASH=$(sha256sum "$SRC_FILE" | cut -d ' ' -f 1)
+          fi
+
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "apk_file=$APK_FILE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          cat <<EOF > ../notes.md
+Native Google Photos backup client for Android 10+ (API 29+), built for \`arm64-v8a\` devices.
+
+### Package Details
+- **Release**: \`$TAG\`
+- **Target OS**: Android 10+ (API 29+)
+- **Architecture**: \`arm64-v8a\`
+- **Engine**: Embedded Python 3.13 via Chaquopy (\`gpmc\` protocol client)
+
+### Checksums (SHA-256)
+- **$APK_FILE**: \`$APK_HASH\`
+EOF
+          if [ -n "$SRC_FILE" ]; then
+            echo "- **$SRC_FILE**: \`$SRC_HASH\`" >> ../notes.md
+          fi
+          cat <<EOF >> ../notes.md
+
+### Verify Download
+- **Linux / macOS**:
+  \`\`\`bash
+  sha256sum -c $APK_FILE.sha256
+  \`\`\`
+- **PowerShell (Windows)**:
+  \`\`\`powershell
+  (Get-FileHash .\\$APK_FILE -Algorithm SHA256).Hash
+  \`\`\`
+
+---
+*See [README.md](https://github.com/Cc-Cece/PicHarbor-Android) for setup, usage, and permissions.*
+EOF
+          cd ..
+          cat notes.md
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.prepare_notes.outputs.tag }}"
+          
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — uploading assets."
+            gh release upload "$TAG" dist/* --clobber
+          else
+            echo "Creating release $TAG..."
+            gh release create "$TAG" dist/* \
+              --title "PicHarbor Android $TAG" \
+              --notes-file notes.md \
+              --verify-tag \
+              --draft
+
+            if [[ "$TAG" == *-* ]]; then
+              echo "Publishing pre-release $TAG..."
+              gh release edit "$TAG" --draft=false --prerelease --latest=false
+            else
+              echo "Publishing latest release $TAG..."
+              gh release edit "$TAG" --draft=false --latest
+            fi
+          fi
+
+      - name: Cleanup signing credentials
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/keystore"
