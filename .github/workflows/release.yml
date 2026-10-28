@@ -135,36 +135,35 @@ jobs:
           echo "apk_file=$APK_FILE" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-          cat <<EOF > ../notes.md
-Native Google Photos backup client for Android 10+ (API 29+), built for \`arm64-v8a\` devices.
+          {
+            echo "Native Google Photos backup client for Android 10+ (API 29+), built for \`arm64-v8a\` devices."
+            echo ""
+            echo "### Package Details"
+            echo "- **Release**: \`$TAG\`"
+            echo "- **Target OS**: Android 10+ (API 29+)"
+            echo "- **Architecture**: \`arm64-v8a\`"
+            echo "- **Engine**: Embedded Python 3.13 via Chaquopy (\`gpmc\` protocol client)"
+            echo ""
+            echo "### Checksums (SHA-256)"
+            echo "- **$APK_FILE**: \`$APK_HASH\`"
+            if [ -n "$SRC_FILE" ]; then
+              echo "- **$SRC_FILE**: \`$SRC_HASH\`"
+            fi
+            echo ""
+            echo "### Verify Download"
+            echo "- **Linux / macOS**:"
+            echo "  \`\`\`bash"
+            echo "  sha256sum -c $APK_FILE.sha256"
+            echo "  \`\`\`"
+            echo "- **PowerShell (Windows)**:"
+            echo "  \`\`\`powershell"
+            echo "  (Get-FileHash .\\$APK_FILE -Algorithm SHA256).Hash"
+            echo "  \`\`\`"
+            echo ""
+            echo "---"
+            echo "*See [README.md](https://github.com/Cc-Cece/PicHarbor-Android) for setup, usage, and permissions.*"
+          } > ../notes.md
 
-### Package Details
-- **Release**: \`$TAG\`
-- **Target OS**: Android 10+ (API 29+)
-- **Architecture**: \`arm64-v8a\`
-- **Engine**: Embedded Python 3.13 via Chaquopy (\`gpmc\` protocol client)
-
-### Checksums (SHA-256)
-- **$APK_FILE**: \`$APK_HASH\`
-EOF
-          if [ -n "$SRC_FILE" ]; then
-            echo "- **$SRC_FILE**: \`$SRC_HASH\`" >> ../notes.md
-          fi
-          cat <<EOF >> ../notes.md
-
-### Verify Download
-- **Linux / macOS**:
-  \`\`\`bash
-  sha256sum -c $APK_FILE.sha256
-  \`\`\`
-- **PowerShell (Windows)**:
-  \`\`\`powershell
-  (Get-FileHash .\\$APK_FILE -Algorithm SHA256).Hash
-  \`\`\`
-
----
-*See [README.md](https://github.com/Cc-Cece/PicHarbor-Android) for setup, usage, and permissions.*
-EOF
           cd ..
           cat notes.md
 
