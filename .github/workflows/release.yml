@@ -147,7 +147,15 @@ jobs:
             SRC_HASH=$(sha256sum "$SRC_FILE" | cut -d ' ' -f 1)
           fi
 
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          INPUT_TAG="${{ github.event.inputs.tag }}"
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            VERSION=$(echo "$APK_FILE" | sed -E 's/PicHarbor-(.+)-arm64\.apk/\1/')
+            TAG="v$VERSION"
+          fi
           echo "apk_file=$APK_FILE" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -197,7 +205,7 @@ jobs:
             gh release create "$TAG" dist/* \
               --title "PicHarbor Android $TAG" \
               --notes-file notes.md \
-              --verify-tag \
+              --target "${{ github.sha }}" \
               --draft
 
             if [[ "$TAG" == *-* ]]; then
