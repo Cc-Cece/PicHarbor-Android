@@ -54,6 +54,22 @@ jobs:
         run: |
           yes | sdkmanager --licenses 2>/dev/null || true
 
+      - name: Restore baseline line endings for frozen engine files
+        run: |
+          python -c "
+          import json, hashlib
+          from pathlib import Path
+          baseline = json.loads(Path('app/src/main/assets/engine-baseline.json').read_text(encoding='utf-8'))
+          extension = json.loads(Path('app/src/main/assets/engine-extension.json').read_text(encoding='utf-8'))
+          for item in baseline.get('files', []) + extension.get('files', []):
+              p = Path('app/src/main/python') / item['path']
+              if p.is_file():
+                  raw = p.read_bytes()
+                  crlf = raw.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+                  if hashlib.sha256(crlf).hexdigest() == item['sha256']:
+                      p.write_bytes(crlf)
+          "
+
       - name: Verify Python engine baseline
         run: python tools/verify_engine.py
 
