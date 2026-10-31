@@ -129,6 +129,7 @@ fun HarborRoot(vm:HarborViewModel,onLogin:()->Unit,onPermissions:()->Unit,onPick
                                 "cleanup-results"->CleanupResultsScreen(vm,data)
                                 "job-details"->JobDetailsScreen(vm,data)
                                 "cleanup-policy"->CleanupPolicyScreen(vm,data)
+                                "computer"->ComputerLinkScreen(vm)
                                 else->PhotosScreen(vm,data,onPermissions,onPickFiles)
                             }
                             if(vm.busy&&!hasStatus)LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
@@ -261,6 +262,7 @@ fun PhotosScreen(vm:HarborViewModel,data:HarborUiData,onPermissions:()->Unit,onP
           Surface(color=MaterialTheme.colorScheme.surfaceContainerHigh,shape=RoundedCornerShape(30.dp),shadowElevation=6.dp){
             Row(Modifier.horizontalScroll(rememberScrollState()).padding(8.dp),horizontalArrangement=Arrangement.spacedBy(6.dp)){
                 Button(onClick={vm.start(vm.selected.toList())},enabled=vm.selected.isNotEmpty()&&!vm.busy){Icon(Icons.Outlined.CloudUpload,null);Spacer(Modifier.width(7.dp));Text("备份所选")}
+                TextButton(onClick={vm.openComputer(vm.selected.toList())},enabled=vm.selected.isNotEmpty()&&!vm.busy){Icon(Icons.Outlined.Computer,null);Spacer(Modifier.width(5.dp));Text("传到电脑")}
                 TextButton(onClick={vm.sheet="delete-local"},enabled=vm.selected.isNotEmpty()&&!vm.busy){Icon(Icons.Outlined.DeleteOutline,null);Spacer(Modifier.width(5.dp));Text("从手机删除")}
             }
           }
@@ -316,6 +318,7 @@ fun BackupScreen(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit) {
                 ToggleRow("自动备份",if(data.settings.auto)"有新增内容时自动检查" else "已关闭，仍可手动备份",data.settings.auto,Icons.Outlined.CloudUpload,!vm.busy){vm.setBoolean("auto",it)}
                 SettingsRow("备份文件夹",if(data.settings.allFolders)"所有文件夹 · 自动包含新文件夹" else "选择自动备份的范围",Icons.Outlined.Folder,onClick={vm.navigate("folders")})
                 SettingsRow("任务记录","查看已完成和未完成的备份",Icons.Outlined.History,onClick={vm.navigate("history")})
+                SettingsRow("传到这台电脑","同一局域网，不需要 Google 账号",Icons.Outlined.Computer,onClick={vm.openComputer()})
             }
             Helper("已备份状态只针对当前账号。新文件先核对云端内容，再决定是否上传。",Icons.Outlined.Security)
             if(job!=null&&job.state in setOf("paused","waiting","needs_attention","auth_required"))TextButton(onClick={vm.sheet="end:${job.id}"}){Text("结束当前任务")}

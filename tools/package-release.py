@@ -11,7 +11,7 @@ out = root / 'dist'
 out.mkdir(exist_ok=True)
 metadata = json.loads((root / 'app/build/outputs/apk/release/output-metadata.json').read_text(encoding='utf-8'))
 version = metadata['elements'][0]['versionName']
-assert version and all(c.isdigit() or c == '.' for c in version), 'Unexpected release version'
+assert version and all(c.isalnum() or c in '.-' for c in version), 'Unexpected release version'
 apk = out / f'PicHarbor-{version}-arm64.apk'
 shutil.copy2(root / 'app/build/outputs/apk/release/app-release.apk', apk)
 archive = out / f'PicHarbor-{version}-source.zip'

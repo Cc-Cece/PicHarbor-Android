@@ -60,6 +60,7 @@ class MainActivity:ComponentActivity() {
         enableEdgeToEdge()
         if(intent.getBooleanExtra("open_history",false))model.navigate("history")
         if(intent.getBooleanExtra("open_cleanup",false))model.afterAction{model.openCleanup(intent.getStringExtra("cleanup_scan").orEmpty())}
+        if(intent.getBooleanExtra("open_computer",false))model.navigate("computer")
         deleteKind=savedInstanceState?.getString("delete_kind").orEmpty()
         cleanupIds=savedInstanceState?.getStringArrayList("cleanup_ids")?:emptyList()
         localIds=savedInstanceState?.getStringArrayList("local_ids")?:emptyList()
@@ -139,6 +140,7 @@ class MainActivity:ComponentActivity() {
         super.onNewIntent(intent);setIntent(intent)
         if(intent.getBooleanExtra("open_history",false))model.navigate("history")
         if(intent.getBooleanExtra("open_cleanup",false))model.afterAction{model.openCleanup(intent.getStringExtra("cleanup_scan").orEmpty())}
+        if(intent.getBooleanExtra("open_computer",false))model.navigate("computer")
     }
     override fun onResume(){super.onResume();model.permissionsChanged();lifecycleScope.launch{model.graph.startup.await();model.graph.cleanup.restorePending()}}
     override fun onSaveInstanceState(outState:Bundle) {

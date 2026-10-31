@@ -65,6 +65,9 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
     var deleteSummary by mutableStateOf("");private set
     val engineReady get()=graph.engineReady
     init { refresh() }
+    var computerIds:List<String>?=null
+        private set
+    fun openComputer(ids:List<String>?=null){computerIds=ids;navigate("computer")}
     fun navigate(destination:String){navigationForward=true;stack+=page;page=destination;sheet="";selected=emptySet();selectionMode=false}
     fun tab(destination:String){stack.clear();page=destination;sheet="";selected=emptySet();selectionMode=false}
     fun back(){if(sheet.isNotEmpty()){sheet="";return};if(selectionMode){clearSelection();return};navigationForward=false;page=stack.removeLastOrNull()?:"photos"}

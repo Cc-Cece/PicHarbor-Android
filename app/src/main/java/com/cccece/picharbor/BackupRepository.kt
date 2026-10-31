@@ -127,8 +127,9 @@ class BackupRepository(private val graph:AppGraph) {
                 val preempted=AtomicBoolean(false)
                 val completed=java.util.concurrent.atomic.AtomicInteger(graph.dao.items(job.id).count{it.state in setOf("done","exists")})
                 val total=graph.dao.items(job.id).size
+                val runnable=pairTwoPart(job,items,settings,authenticationFailure,completed,total,notify){externalCancelled()}
                 supervisorScope {
-                    items.map { item -> async(Dispatchers.IO) { semaphore.withPermit {
+                    runnable.map { item -> async(Dispatchers.IO) { semaphore.withPermit {
                         if(stopping.get()||externalCancelled()||authenticationFailure.get()||graph.switching.value)return@withPermit
                         if(graph.dao.item(item.id)?.jobId!=job.id)return@withPermit
                         if(job.automatic&&graph.dao.pendingManual(account)>0){preempted.set(true);return@withPermit}
@@ -211,6 +212,78 @@ class BackupRepository(private val graph:AppGraph) {
         } finally {
             inFlight.update{it-item.id}
         }
+    }
+    /** Pair each true two-part Live Photo once, before the parallel process() loop can race both halves. */
+    private suspend fun pairTwoPart(job:BackupJob,items:List<BackupItem>,settings:HarborSettings,authenticationFailure:AtomicBoolean,completed:java.util.concurrent.atomic.AtomicInteger,total:Int,notify:(String,Int)->Unit,externalCancelled:()->Boolean):List<BackupItem> {
+        if(items.size<2)return items
+        val matches=LivePairing.match(graph.dao.media().map{LivePairing.StemFile(it.id,it.name,it.folderKey)})
+        if(matches.isEmpty())return items
+        val byMedia=items.associateBy{it.mediaId}
+        val consumed=HashSet<String>()
+        var authCode=""
+        val halted={graph.switching.value||stopping.get()||externalCancelled()||authenticationFailure.get()}
+        for(match in matches) {
+            if(halted())break
+            val photoItem=byMedia[match.photoId]?:continue
+            val videoItem=byMedia[match.videoId]?:continue
+            if(photoItem.remoteKey.isNotEmpty()||videoItem.remoteKey.isNotEmpty())continue
+            if(photoItem.state=="album_pending"||videoItem.state=="album_pending")continue
+            val photo=graph.dao.media(photoItem.mediaId)?:continue
+            val video=graph.dao.media(videoItem.mediaId)?:continue
+            if(LivePairing.isMotionContainer(graph.app,photo.id)!=false)continue
+            consumed.add(photoItem.id);consumed.add(videoItem.id)
+            try {
+                val beforePhoto=graph.media.current(photo)?:throw EngineFailure("FILE_ACCESS")
+                val beforeVideo=graph.media.current(video)?:throw EngineFailure("FILE_ACCESS")
+                if(beforePhoto.first!=photo.size||beforePhoto.second!=photo.modified||beforeVideo.first!=video.size||beforeVideo.second!=video.modified)throw EngineFailure("SOURCE_CHANGED")
+                graph.dao.putItem(photoItem.copy(state="hashing"));graph.dao.putItem(videoItem.copy(state="hashing"))
+                val request=JSONObject().put("_account",job.account).put("quality",job.quality).put("retries",settings.retries)
+                    .put("photo",JSONObject().put("uri",photo.id).put("name",photo.name).put("modified",photo.modified).put("created",photo.captured))
+                    .put("video",JSONObject().put("uri",video.id).put("name",video.name).put("modified",video.modified).put("created",video.captured))
+                val callback=EngineCallback(halted) { event ->
+                    val current=TransferProgress(job.id,photoItem.id,photo.name,event.optString("phase"),event.optLong("completed"),event.optLong("total"))
+                    progress.value=current;inFlight.update{it+(photoItem.id to current)}
+                }
+                val result=graph.engine.call("pair_live",request,callback)
+                if(graph.media.current(photo)!=beforePhoto||graph.media.current(video)!=beforeVideo) {
+                    graph.dao.invalidate(job.account,photo.id);graph.dao.invalidate(job.account,video.id);throw EngineFailure("SOURCE_CHANGED")
+                }
+                val photoSide=pairedSide(result,"photo");val videoSide=pairedSide(result,"video")
+                if(photoSide.getLong("size")!=photo.size||videoSide.getLong("size")!=video.size)throw EngineFailure("SOURCE_CHANGED")
+                val photoDone=uploaded(job,photo,photoItem,photoSide);val videoDone=uploaded(job,video,videoItem,videoSide)
+                graph.dao.putItem(photoDone.copy(state="done",error="",attempt=photoItem.attempt+1))
+                graph.dao.putItem(videoDone.copy(state="done",error="",attempt=videoItem.attempt+1))
+                val done=completed.addAndGet(2);notify("正在备份 · $done / $total",if(total>0)done*100/total else 0)
+            } catch(error:Exception) {
+                val code=(error as? EngineFailure)?.code?:if(halted())"CANCELLED" else "ENGINE_ERROR"
+                val state=if(code=="CANCELLED")"queued" else "failed"
+                graph.dao.putItem(photoItem.copy(state=state,error=code,attempt=photoItem.attempt+1))
+                graph.dao.putItem(videoItem.copy(state=state,error=code,attempt=videoItem.attempt+1))
+                if(code in setOf("LOGIN_REQUIRED","DEVICE_VERIFICATION","ENCRYPTED_TOKEN")){authenticationFailure.set(true);authCode=code}
+                if(code=="LOGIN_REQUIRED")notice.value=Messages.error(code)
+            } finally {inFlight.update{it-photoItem.id}}
+        }
+        if(halted()) {
+            for(match in matches) {
+                val photoItem=byMedia[match.photoId]?:continue
+                val videoItem=byMedia[match.videoId]?:continue
+                if(photoItem.id in consumed||videoItem.id in consumed)continue
+                if(photoItem.remoteKey.isNotEmpty()||videoItem.remoteKey.isNotEmpty()||photoItem.state=="album_pending"||videoItem.state=="album_pending")continue
+                val photo=graph.dao.media(photoItem.mediaId)?:continue
+                if(LivePairing.isMotionContainer(graph.app,photo.id)!=false)continue
+                consumed.add(photoItem.id);consumed.add(videoItem.id)
+                val code=authCode.ifEmpty{"CANCELLED"}
+                val state=if(code=="CANCELLED")"queued" else "failed"
+                graph.dao.putItem(photoItem.copy(state=state,error=if(state=="queued")"" else code))
+                graph.dao.putItem(videoItem.copy(state=state,error=if(state=="queued")"" else code))
+            }
+        }
+        return items.filter{it.id !in consumed}
+    }
+    private fun pairedSide(result:JSONObject,name:String):JSONObject {
+        val part=result.getJSONObject(name)
+        return JSONObject().put("remote_key",result.getString("remote_key")).put("origin",result.getString("origin"))
+            .put("sha1",part.getString("sha1")).put("sha256",part.getString("sha256")).put("size",part.getLong("size"))
     }
     private suspend fun uploaded(job:BackupJob,media:MediaEntry,item:BackupItem,data:JSONObject):BackupItem {
         val key=data.optString("remote_key")

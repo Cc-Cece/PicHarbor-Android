@@ -1,5 +1,5 @@
 {
-  "version": "1.0.7",
+  "version": "1.0.9",
   "note": "Only new mobile extensions; all 31 original files remain unchanged.",
   "files": [
     {
@@ -8,7 +8,11 @@
     },
     {
       "path": "picharbor_engine.py",
-      "sha256": "4394fbe0ac0a555223c7085b31f531dc65fabe6b7db544b072ba93c1d510a8f2"
+      "sha256": "1e00d358bcae52d53747981c7d2f82f7329b9aad7ad1eb8404dc72e2170b76d0"
+    },
+    {
+      "path": "harbor_pair.py",
+      "sha256": "7ef70f015350b780510dbc7670b6272bdfc29f724c0edaa47ddff91c12a4cfd3"
     }
   ]
 }

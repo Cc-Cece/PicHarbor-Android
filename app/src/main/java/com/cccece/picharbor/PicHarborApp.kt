@@ -54,6 +54,7 @@ class AppGraph(val app:Application,val engineReady:Boolean) {
     val backup=BackupRepository(this)
     val cleanup=CleanupRepository(this)
     val scheduler=Scheduler(this)
+    val link=ComputerLink(app)
     fun refreshProfile(account:String,force:Boolean=false)=scope.launch {
         if(account.isBlank()||!profileLock.tryLock())return@launch
         try {

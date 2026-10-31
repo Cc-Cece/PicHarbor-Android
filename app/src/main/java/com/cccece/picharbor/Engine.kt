@@ -55,6 +55,8 @@ object Messages {
         "RISK_CONFIRMATION_REQUIRED"->"请输入完整的风险确认语"
         "ORIGINAL_UNCONFIRMED","ORIGINAL_UNAVAILABLE"->"暂时无法确认云端原件，已保留手机文件"
         "FILENAME_ONLY"->"发现同名文件，尚未确认内容相同"
+        "UPLOAD_RESPONSE_INVALID","PAIR_COMMIT_REJECTED","COMMIT_UNCONFIRMED"->"云端没有确认这组成对的实况照片"
+        "INVALID_PAIR","INVALID_PAIR_NAME"->"这组实况照片无法配对"
         "CANCELLED"->"操作已暂停"
         "STORAGE_FULL"->"手机可用空间不足"
         "ACCESS_LOST"->"文件夹访问权限已失效"

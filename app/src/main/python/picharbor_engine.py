@@ -9,4 +9,7 @@ def initialize(home):
     return True
 
 def dispatch(action, payload, bridge=None, callback=None):
+    if action == "pair_live":
+        from harbor_pair import pair_live
+        return pair_live(service, payload, bridge, callback)
     return service.dispatch(action, payload, bridge, callback)

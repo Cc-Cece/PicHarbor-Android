@@ -32,6 +32,10 @@ fun SettingsScreen(vm:HarborViewModel,data:HarborUiData) {
                 SettingsRow("备份账号",s.account.ifEmpty{"尚未登录"},Icons.Outlined.PersonOutline,onClick={vm.sheet="account"})
                 SettingsRow("备份画质",qualityName(s.quality),Icons.Outlined.Image,onClick={vm.sheet="quality"})
             }
+            SectionLabel("传到电脑")
+            SettingGroup {
+                SettingsRow("传到这台电脑","同一局域网发送，不需要 Google 账号",Icons.Outlined.Computer,onClick={vm.openComputer()})
+            }
             SectionLabel("备份内容")
             SettingGroup {
                 SettingsRow("备份文件夹",if(s.allFolders)"所有文件夹 · 自动包含新文件夹" else "选择想自动备份的内容",Icons.Outlined.Folder,onClick={vm.navigate("folders")})
