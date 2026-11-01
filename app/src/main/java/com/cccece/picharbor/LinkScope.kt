@@ -26,10 +26,15 @@ internal data class LinkScope(
                 j.optString("to").takeUnless{it=="null"}.orEmpty(),j.optBoolean("photos",true),j.optBoolean("videos",true),
                 j.optBoolean("ignoreSmallImages",true),j.optInt("minImageKb",100),j.optBoolean("filterCache",true)).validated()
         }
+        fun decoded(path:String)=runCatching{java.net.URLDecoder.decode(path,"UTF-8")}.getOrDefault(path)
         fun camera(path:String)=path.split('/','|').any{it.equals("Camera",true)||it.equals("Screenshots",true)||it.equals("ScreenCapture",true)}
         fun time(e:MediaEntry)= (if(e.captured>0)e.captured else e.modified).let{if(it in 1..9_999_999_999L)it*1000 else it}
         fun logicalCount(entries:List<MediaEntry>)=entries.groupBy(::groupKey).values.sumOf{if(it.size==2&&it.any{e->e.video}&&it.any{e->!e.video})1 else it.size}
-        fun groupKey(e:MediaEntry)=e.folderKey+"|"+e.name.substringBeforeLast('.').lowercase(java.util.Locale.ROOT)
+        fun groupKey(e:MediaEntry):String {
+            // SAF trees may contain repeated filenames in different subdirectories.
+            val parent=if(e.source=="media")e.folderKey else if(e.source=="manual")e.id else decoded(e.id).substringBeforeLast('/')
+            return parent+"|"+e.name.substringBeforeLast('.').lowercase(java.util.Locale.ROOT)
+        }
     }
     private fun validated():LinkScope {
         require(mode in setOf("default","all","date","advanced")){"范围参数无效"}
@@ -52,7 +57,7 @@ internal data class LinkScope(
             val paired=group.size==2&&photo!=null&&group.any{it.video}
             val main=photo?:group.first()
             val folder=when(mode){"advanced"->main.folderKey in albums;"default"->camera(main.folderKey);else->true}
-            val path=main.folderKey.lowercase(java.util.Locale.ROOT)
+            val path=decoded(main.folderKey).lowercase(java.util.Locale.ROOT)
             val cache=listOf(".thumbnails",".trashed",".trash",".pending","cache","android/data","android/obb").any{path.contains(it)}
             val date=time(main)
             if(!folder||(filterCache&&cache)||(dateEnabled&&(date<=0||date<start||date>=end)))emptyList()
@@ -73,5 +78,7 @@ internal data class LinkScope(
     }
     fun summary()=listOf(when(mode){"default"->"相机与截图";"advanced"->"已选 ${albums.size} 个文件夹";else->"全部可访问媒体"},
         if(dateEnabled)"${from.ifEmpty{"不限"}} 至 ${to.ifEmpty{"不限"}}" else "不限日期",
-        if(photos&&videos)"照片和视频" else if(photos)"照片（含实况）" else "视频").joinToString(" · ")
+        if(photos&&videos)"照片和视频" else if(photos)"照片（含实况）" else "视频",
+        if(ignoreSmallImages)"普通照片小图阈值 $minImageKb KB" else "保留小图",
+        if(filterCache)"过滤缓存目录" else "保留缓存目录").joinToString(" · ")
 }

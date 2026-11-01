@@ -13,7 +13,7 @@ class LinkScopeTest {
         assertEquals(listOf("before","during"),LinkScope.parse("range::2026-11-01").select(entries).map{it.id})
     }
     @Test fun collectionsDatesTypesAndSizeAreIntersected() {
-        val scope=LinkScope(mode="advanced",albums=setOf("external|DCIM/Camera"),dateEnabled=true,from="2026-11-01",photos=true,videos=false,ignoreSmallImages=true)
+        val scope=LinkScope.parse("scope2:"+"""{"mode":"advanced","albums":["external|DCIM/Camera"],"dateEnabled":true,"from":"2026-11-01","to":null,"photos":true,"videos":false,"ignoreSmallImages":true,"minImageKb":100,"filterCache":true}""")
         val entries=listOf(media("keep"),media("small",bytes=20),media("other",folder="external|Download"),media("old",time=stamp("2025-01-01")),media("vid",name="clip.mov"))
         assertEquals(listOf("keep"),scope.select(entries).map{it.id})
     }
@@ -37,6 +37,12 @@ class LinkScopeTest {
         assertEquals(listOf("one"),scope.select(sameNames).map{it.id})
         assertTrue(scope.select(sameNames.drop(1)).isEmpty())
         assertTrue(scope.select(emptyList()).isEmpty())
+    }
+    @Test fun differentSafSubdirectoriesAreNotMistakenForOneLivePhoto() {
+        val photo=media("content://documents/tree/root/document/root%2Fone%2FIMG_1.jpg",name="IMG_1.jpg",folder="tree",bytes=20).copy(source="tree")
+        val video=media("content://documents/tree/root/document/root%2Ftwo%2FIMG_1.mov",name="IMG_1.mov",folder="tree",bytes=20).copy(source="tree")
+        assertEquals(2,LinkScope.logicalCount(listOf(photo,video)))
+        assertTrue(LinkScope(videos=false,ignoreSmallImages=true).select(listOf(photo,video)).isEmpty())
     }
     @Test fun manuallySelectedMediaDoesNotUseComputerScope() {
         val chosen=listOf(media("download",folder="external|Download",bytes=20))
