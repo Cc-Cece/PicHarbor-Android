@@ -39,10 +39,12 @@ class ComputerLink(private val app:Application) {
     @Volatile private var presence:Job?=null
     @Volatile private var pending:Pending?=null
     @Volatile private var generation=0
+    private val catalogStamps=java.util.concurrent.ConcurrentHashMap<String,Int>()
+    private val catalogRevisions=java.util.concurrent.ConcurrentHashMap<String,Long>()
     private val responding=java.util.concurrent.atomic.AtomicBoolean(false)
     private data class Pending(val target:LinkTarget,val ids:List<String>?,val offerId:String?=null)
     private data class Session(val target:LinkTarget,val token:String,val pin:String,val blocked:String?=null)
-    private data class SendPlan(val mediaId:String,val id:String,val name:String,val size:Long,val created:Long,val sha256:String)
+    private data class SendPlan(val mediaId:String,val id:String,val name:String,val size:Long,val created:Long,val sha256:String,val group:String=id,val role:String="")
 
     fun paired(fingerprint:String)=identity.isPaired(fingerprint)
 
@@ -146,9 +148,12 @@ class ComputerLink(private val app:Application) {
         transport.close()
     }
 
+    private val unreadableNames=mutableListOf<String>()
+
     suspend fun execute() {
         val request=pending?:return
         cancelled.set(false)
+        unreadableNames.clear()
         try {
             publish(LinkProgress(running=true,phase="正在连接 ${request.target.name.ifBlank{request.target.host}}",target=request.target.host))
             var session=connect(request.target)
@@ -162,22 +167,23 @@ class ComputerLink(private val app:Application) {
             if(request.offerId!=null) {
                 val offerId=request.offerId
                 call(session,"POST","/v1/offers/$offerId/accept",ByteArray(0))
+                var complete=false
                 try {
                     val plans=if(request.ids.isNullOrEmpty())emptyList() else prepare(request.ids)
                     sendPlans(session,plans)
-                } finally {
-                    runCatching{call(session,"POST","/v1/offers/$offerId/finish",ByteArray(0))}
-                }
+                    complete=unreadableNames.isEmpty()
+                } finally { finishOffer(session,offerId,complete) }
                 return
             }
             val plans=prepare(request.ids)
-            publish(LinkProgress(running=true,phase="正在等待电脑确认…",total=plans.size,target=session.target.host))
-            val offerId=createOffer(session,if(request.ids==null)"library" else "selected",plans.size)
+            publish(LinkProgress(running=true,phase="正在等待电脑确认…",total=plans.map{it.group}.toSet().size,target=session.target.host))
+            val offerId=createOffer(session,if(request.ids==null)"library" else "selected",plans.map{it.group}.toSet().size)
             if(!waitForComputer(session,offerId)) {
                 publish(LinkProgress(phase="电脑没有确认",error="电脑没有确认",target=session.target.host))
                 return
             }
-            try{sendPlans(session,plans)}finally{runCatching{call(session,"POST","/v1/offers/$offerId/finish",ByteArray(0))}}
+            var complete=false
+            try{sendPlans(session,plans);complete=unreadableNames.isEmpty()}finally{finishOffer(session,offerId,complete)}
         } catch(_:LinkCancelled) {
             publish(LinkProgress(phase="已停止发送",error="已停止发送",target=request.target.host))
         } catch(error:Exception) {
@@ -186,6 +192,13 @@ class ComputerLink(private val app:Application) {
             pending=null
             responding.set(false)
         }
+    }
+
+    private fun finishOffer(session:Session,id:String,complete:Boolean) {
+        val details=if(unreadableNames.isEmpty())"读取或传输失败，可重新发起备份重试" else "无法读取："+unreadableNames.take(20).joinToString("、")
+        val body=JSONObject().put("success",complete).put("error",if(complete)JSONObject.NULL else details)
+        runCatching{call(session,"POST","/v1/offers/$id/finish",body.toString().toByteArray(Charsets.UTF_8))}
+        if(!complete)hint.value=details
     }
 
     private fun connect(target:LinkTarget):Session {
@@ -205,10 +218,12 @@ class ComputerLink(private val app:Application) {
     }
 
     private suspend fun checkIncoming() {
+        if(progress.value.running||responding.get()||incoming.value!=null)return
         if(progress.value.running||responding.get())return
         val endpoint=identity.endpoint()?:return
         val target=LinkTarget(endpoint.host,endpoint.port,endpoint.fingerprint,"",endpoint.name,endpoint.alts)
         val session=try{checkIn(connect(target))}catch(_:Exception){return}
+        exchangeCatalog(session)
         if(progress.value.running||responding.get()||incoming.value!=null)return
         val blocked=session.blocked
         if(blocked!=null) {
@@ -227,8 +242,12 @@ class ComputerLink(private val app:Application) {
         val id=chosen.optString("id")
         if(id.isEmpty())return
         val scope=chosen.optString("scope").ifBlank{"all"}
-        val entries=mediaFor(scope,null)
-        incoming.value=LinkAsk(id,entries.size,"将发送 ${entries.size} 项到电脑",session.target,entries.map{it.id})
+        val entries=try { mediaFor(scope,null) } catch(error:Exception) {
+            hint.value=error.message?:"范围无效，请更新应用"
+            runCatching{call(session,"POST","/v1/offers/$id/reject",ByteArray(0))}
+            return
+        }
+        incoming.value=LinkAsk(id,LinkScope.logicalCount(entries),"将发送 ${LinkScope.logicalCount(entries)} 项到电脑\n${LinkScope.parse(scope).summary()}",session.target,entries.map{it.id})
     }
 
     private fun checkIn(session:Session):Session {
@@ -240,7 +259,7 @@ class ComputerLink(private val app:Application) {
             else->identity.archiveCode()
         }
         val unreadable=report.unreadable&&presented==null
-        val body=JSONObject().put("name",Build.MODEL).put("platform","android").put("directory",report.directoryReady).put("unreadable",unreadable)
+        val body=JSONObject().put("name",Build.MODEL).put("platform","android").put("directory",report.directoryReady).put("unreadable",unreadable).put("capabilities",JSONArray(listOf("scope2","catalog2")))
         if(presented!=null)body.put("archiveId",presented)
         val hello=JSONObject(call(session,"POST","/v1/hello",body.toString().toByteArray(Charsets.UTF_8)).toString(Charsets.UTF_8))
         val deliver=hello.optString("deliver").trim()
@@ -248,7 +267,7 @@ class ComputerLink(private val app:Application) {
         if(LinkProtocol.usableArchive(deliver)) {
             identity.storeArchive(deliver)
             LinkArchiveFile.write(deliver)
-            val again=JSONObject().put("name",Build.MODEL).put("platform","android").put("directory",true).put("unreadable",false).put("archiveId",deliver)
+            val again=JSONObject().put("name",Build.MODEL).put("platform","android").put("directory",true).put("unreadable",false).put("archiveId",deliver).put("capabilities",JSONArray(listOf("scope2","catalog2")))
             val echoed=JSONObject(call(session,"POST","/v1/hello",again.toString().toByteArray(Charsets.UTF_8)).toString(Charsets.UTF_8))
             if(echoed.optBoolean("conflict"))return session.copy(blocked="这台手机的身份和电脑上的记录不一致。请确认是不是连错了设备。")
             current=session
@@ -302,7 +321,8 @@ class ComputerLink(private val app:Application) {
             publish(LinkProgress(phase="已发送 0 项",done=0,total=0,target=session.target.host))
             return
         }
-        publish(LinkProgress(running=true,phase="正在核对 ${plans.size} 项",total=plans.size,target=session.target.host))
+        val groups=plans.groupBy{it.group}.values
+        publish(LinkProgress(running=true,phase="正在核对 ${groups.size} 项",total=groups.size,target=session.target.host))
         var token=session.token
         var pin=session.pin
         var manifest=authed(session.target,pin,token,"POST","/v1/manifest",jsonHeaders(),manifestBody(plans)){pin=it}
@@ -317,30 +337,23 @@ class ComputerLink(private val app:Application) {
         var done=0
         var failed=0
         var sent=0L
-        for(plan in plans) {
-            if(cancelled.get())throw LinkCancelled()
-            if(plan.id in have) {
-                done++
-                publish(LinkProgress(running=true,phase="电脑上已有 ${plan.name}",done=done,total=plans.size,bytes=sent,target=session.target.host))
-                continue
+        for(group in groups) {
+            var complete=true
+            for(plan in group) {
+                if(cancelled.get())throw LinkCancelled()
+                if(plan.id in have)continue
+                if(plan.id !in need) { unreadableNames+=plan.name; complete=false; break }
+                try {
+                    publish(LinkProgress(running=true,phase="正在发送 ${plan.name}",done=done,total=groups.size,bytes=sent,target=session.target.host))
+                    upload(session.target,plan,token,pin,{pin=it}){token=it}
+                    sent+=plan.size
+                } catch(error:LinkCancelled) { throw error }
+                catch(_:Exception) { unreadableNames+=plan.name; complete=false; break }
             }
-            if(plan.id !in need) {
-                failed++
-                continue
-            }
-            try {
-                publish(LinkProgress(running=true,phase="正在发送 ${plan.name}",done=done,total=plans.size,bytes=sent,target=session.target.host))
-                upload(session.target,plan,token,pin,{pin=it}){token=it}
-                sent+=plan.size
-                done++
-            } catch(error:LinkCancelled) {
-                throw error
-            } catch(_:Exception) {
-                failed++
-            }
+            if(complete)done++ else failed++
         }
         val problem=if(failed>0)"$failed 项没有送出" else ""
-        publish(LinkProgress(phase="已发送 $done 项",done=done,total=plans.size,bytes=sent,error=problem,target=session.target.host))
+        publish(LinkProgress(phase="已发送 $done 项",done=done,total=groups.size,bytes=sent,error=problem,target=session.target.host))
     }
 
     private fun call(session:Session,method:String,path:String,body:ByteArray):ByteArray {
@@ -355,23 +368,41 @@ class ComputerLink(private val app:Application) {
         return http.body
     }
 
+    private suspend fun exchangeCatalog(session:Session) {
+        val response=runCatching{JSONObject(call(session,"GET","/v1/catalog",ByteArray(0)).toString(Charsets.UTF_8))}.getOrNull()?:return
+        val revision=response.optLong("revision")
+        val graph=(app as PicHarborApp).graph
+        val previous=graph.dao.media()
+        val stamp=previous.hashCode()*31+graph.media.hasAccess().hashCode()
+        if(catalogRevisions[session.pin]==revision&&catalogStamps[session.pin]==stamp)return
+        graph.media.scan()
+        val entries=graph.dao.media().filter{it.source!="media"||graph.media.hasAccess()}
+        val report=try{val criteria=LinkScope.parse(response.getString("scope")); criteria.report(revision,entries,protectedMotion(entries,criteria))}
+            catch(error:Exception){JSONObject().put("revision",revision).put("timeZone",java.time.ZoneId.systemDefault().id)
+                .put("albums",JSONArray()).put("count",0).put("bytes",0).put("unknownSize",0).put("unknownDate",0).put("error",error.message?:"范围无效")}
+        call(session,"POST","/v1/catalog",report.toString().toByteArray(Charsets.UTF_8))
+        catalogRevisions[session.pin]=revision
+        catalogStamps[session.pin]=entries.hashCode()*31+graph.media.hasAccess().hashCode()
+    }
+
+    private fun protectedMotion(entries:List<MediaEntry>,criteria:LinkScope):Set<String> {
+        if(!criteria.ignoreSmallImages)return emptySet()
+        return entries.filter{!it.video&&it.size in 1 until criteria.minImageKb*1024L}.filter{entry->
+            runCatching { app.contentResolver.openInputStream(Uri.parse(entry.id))?.use{stream ->
+                val bytes=ByteArray(256*1024); val count=stream.read(bytes)
+                val header=if(count>0)String(bytes,0,count,Charsets.ISO_8859_1) else ""
+                header.contains("MotionPhoto")||header.contains("MicroVideo")
+            }?:false }.getOrDefault(false)
+        }.map{it.id}.toSet()
+    }
+
     private suspend fun mediaFor(scope:String,ids:List<String>?):List<MediaEntry> {
+        val graph=(app as PicHarborApp).graph
+        graph.media.scan()
         val chosen=ids?.toSet()
-        return (app as PicHarborApp).graph.dao.media().filter{chosen==null||it.id in chosen}.filter{entry->
-            if(!scope.startsWith("range:"))return@filter true
-            val parts=scope.split(':')
-            if(parts.size<3)return@filter false
-            val captured=millis(entry.captured)
-            if(captured<=0)return@filter false
-            try {
-                val zone=java.time.ZoneId.systemDefault()
-                val from=java.time.LocalDate.parse(parts[1]).atStartOfDay(zone).toInstant().toEpochMilli()
-                val end=java.time.LocalDate.parse(parts[2]).plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
-                captured in from until end
-            } catch(_:Exception) {
-                false
-            }
-        }
+        val entries=graph.dao.media().filter{chosen==null||it.id in chosen}.filter{it.source!="media"||graph.media.hasAccess()}
+        val criteria=LinkScope.parse(scope)
+        return criteria.select(entries,protectedMotion(entries,criteria))
     }
 
     private fun localIpv4():String? {
@@ -384,7 +415,7 @@ class ComputerLink(private val app:Application) {
     }
 
     private fun reason(error:String,fallback:String)=when(error) {
-        "no_archive"->"请先在电脑上选择归档目录"
+        "no_archive"->"请先在电脑设置中配置归档目录"
         "no_offer"->"电脑没有接受这次请求"
         "need_accept"->"电脑还没有确认"
         else->fallback
@@ -399,6 +430,7 @@ class ComputerLink(private val app:Application) {
         val graph=(app as PicHarborApp).graph
         val chosen=ids?.toSet()
         val media=graph.dao.media().filter{chosen==null||it.id in chosen}
+        val pairs=media.groupBy(LinkScope::groupKey).filterValues{it.size==2&&it.any{e->e.video}&&it.any{e->!e.video}}.keys
         val plans=ArrayList<SendPlan>()
         var unreadable=0
         for(entry in media) {
@@ -410,12 +442,18 @@ class ComputerLink(private val app:Application) {
                 if(size<=0)continue
                 val created=unixSeconds(if(entry.captured>0)entry.captured else entry.modified)
                 val name=entry.name.substringAfterLast('/').substringAfterLast('\\').ifBlank{"photo"}
-                plans+=SendPlan(entry.id,LinkProtocol.blobId(entry.id),name,size,created,hash)
+                val paired=LinkScope.groupKey(entry) in pairs
+                plans+=SendPlan(entry.id,LinkProtocol.blobId(entry.id),name,size,created,hash,if(paired)LinkProtocol.blobId(LinkScope.groupKey(entry)) else LinkProtocol.blobId(entry.id),if(paired)if(entry.video)"video" else "still" else "")
             } catch(error:LinkCancelled){throw error}
-            catch(_:Exception){unreadable++}
+            catch(_:Exception){unreadable++;unreadableNames+=entry.name}
         }
-        if(plans.isEmpty())throw LinkRejected(0,"file",if(unreadable>0)"无法读取文件" else "没有可发送的照片")
-        return plans
+        val preparedIds=plans.map{it.mediaId}.toSet()
+        val incomplete=media.groupBy(LinkScope::groupKey).values.filter{group->group.size==2&&group.any{it.video}&&group.any{!it.video}&&group.any{it.id !in preparedIds}}
+        val exclude=incomplete.flatten().map{it.id}.toSet()
+        incomplete.flatten().forEach{if(it.name !in unreadableNames)unreadableNames+=it.name}
+        val complete=plans.filter{it.mediaId !in exclude}
+        if(complete.isEmpty())throw LinkRejected(0,"file",if(unreadable>0||incomplete.isNotEmpty())"无法读取完整媒体，请刷新后重试" else "没有可发送的照片")
+        return complete
     }
 
     private fun upload(target:LinkTarget,plan:SendPlan,initialToken:String,initialPin:String,pinOut:(String)->Unit,tokenOut:(String)->Unit) {
@@ -548,7 +586,7 @@ class ComputerLink(private val app:Application) {
         val items=JSONArray()
         for(plan in plans) {
             items.put(JSONObject().put("id",plan.id).put("name",plan.name).put("size",plan.size).put("created",plan.created)
-                .put("sha256",plan.sha256).put("pairId","").put("role",""))
+                .put("sha256",plan.sha256).put("pairId",if(plan.role.isEmpty())"" else plan.group).put("role",plan.role))
         }
         return JSONObject().put("model",Build.MODEL).put("items",items).toString().toByteArray(Charsets.UTF_8)
     }
