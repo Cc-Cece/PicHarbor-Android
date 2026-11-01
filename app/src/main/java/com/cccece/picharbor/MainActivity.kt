@@ -55,14 +55,6 @@ class MainActivity:ComponentActivity() {
             cleanupIds=emptyList();localIds=emptyList()
         }
     }
-    override fun onStart() {
-        super.onStart()
-        model.graph.link.startPresence()
-    }
-    override fun onStop() {
-        model.graph.link.stopPresence()
-        super.onStop()
-    }
     override fun onCreate(savedInstanceState:Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -142,8 +134,8 @@ class MainActivity:ComponentActivity() {
             cleanupIds=emptyList();localIds=emptyList()
         }
     }
-    override fun onStart(){super.onStart();model.graph.visible.set(true)}
-    override fun onStop(){model.graph.visible.set(false);super.onStop()}
+    override fun onStart(){super.onStart();model.graph.visible.set(true);model.graph.link.startPresence()}
+    override fun onStop(){model.graph.link.stopPresence();model.graph.visible.set(false);super.onStop()}
     override fun onNewIntent(intent:Intent){
         super.onNewIntent(intent);setIntent(intent)
         if(intent.getBooleanExtra("open_history",false))model.navigate("history")
