@@ -11,8 +11,9 @@ import javax.crypto.spec.SecretKeySpec
 class LinkCancelled:Exception("cancelled")
 class LinkRejected(val status:Int,val error:String,message:String):Exception(message)
 
-data class LinkTarget(val host:String,val port:Int,val pin:String,val code:String,val name:String)
-data class DiscoveredComputer(val name:String,val host:String,val port:Int,val fingerprint:String,val seenAt:Long)
+data class LinkTarget(val host:String,val port:Int,val pin:String,val code:String,val name:String,val alts:List<String> = emptyList())
+data class LinkEndpoint(val host:String,val port:Int,val fingerprint:String,val name:String,val alts:List<String>)
+data class DiscoveredComputer(val name:String,val host:String,val port:Int,val fingerprint:String,val seenAt:Long,val hosts:List<String> = emptyList())
 
 object LinkProtocol {
     const val GROUP="239.255.77.77"
@@ -110,7 +111,8 @@ object LinkProtocol {
         val fingerprint=map["fp"]?.trim()?.lowercase().orEmpty()
         val code=map["code"]?.trim().orEmpty()
         if(!validHost(host)||port !in 1..65535||!HEX64.matches(fingerprint)||!CODE.matches(code))return null
-        return LinkTarget(host,port,fingerprint,code,"")
+        val alts=map["alts"].orEmpty().split(',').map{it.trim()}.filter{validHost(it)&&it!=host&&it!="127.0.0.1"}
+        return LinkTarget(host,port,fingerprint,code,"",alts)
     }
 
     fun manual(host:String,portText:String,pin:String,code:String):LinkTarget? {
@@ -131,8 +133,26 @@ object LinkProtocol {
         val fingerprint=jsonString(text,"fp")?.trim()?.lowercase().orEmpty()
         val name=jsonString(text,"name")?.trim().orEmpty().ifEmpty{host}
         if(!validHost(host)||port !in 1..65535||!HEX64.matches(fingerprint))return null
-        return DiscoveredComputer(name,host,port,fingerprint,0)
+        val hosts=(listOf(host)+jsonStringArray(text,"hosts")).map{it.trim()}.filter{validHost(it)&&it!="127.0.0.1"}.distinct()
+        return DiscoveredComputer(name,hosts.firstOrNull()?:host,port,fingerprint,0,if(hosts.isEmpty())listOf(host) else hosts)
     }
+
+    /** Same /24 as the phone first. The computer is still one device. */
+    fun orderAddresses(hosts:List<String>,phone:String?):List<String> {
+        val parts=phone?.trim()?.split('.')
+        val prefix=if(parts!=null&&parts.size==4)parts.take(3).joinToString(".")+"." else ""
+        return hosts.map{it.trim()}.filter{it.isNotEmpty()}.distinct().sortedWith(compareBy({if(prefix.isNotEmpty()&&it.startsWith(prefix))0 else 1},{it}))
+    }
+
+    /** Single-value serial rules shared with the computer. A PH- code is included; android: is not. */
+    fun usableArchive(value:String?):Boolean {
+        val trimmed=value?.trim().orEmpty()
+        if(trimmed.length !in 4..64||trimmed.contains('&')||trimmed.lowercase().startsWith("android:"))return false
+        if(trimmed.all{it==trimmed[0]})return false
+        return trimmed.lowercase() !in PLACEHOLDERS
+    }
+
+    private val PLACEHOLDERS=setOf("0123456789","0123456789abcdef","1234567890","0000000000000000","ffffffffffffffff","unknown","none","null","n/a","na","default")
 
     private fun validHost(host:String)=host.isNotEmpty()&&host.length<=253&&host.none{it.isWhitespace()||it=='/'||it=='\\'}
 
@@ -142,6 +162,11 @@ object LinkProtocol {
     }
 
     private fun jsonInt(json:String,key:String):Int?=Regex(""""${Regex.escape(key)}"\s*:\s*(-?\d+)""").find(json)?.groupValues?.get(1)?.toIntOrNull()
+
+    private fun jsonStringArray(json:String,key:String):List<String> {
+        val body=Regex(""""${Regex.escape(key)}"\s*:\s*\[(.*?)]""").find(json)?.groupValues?.get(1)?:return emptyList()
+        return Regex(""""((?:\\.|[^"\\])*)"""").findAll(body).map{it.groupValues[1]}.toList()
+    }
 
     private fun unsigned32(value:BigInteger):ByteArray {
         val raw=value.toByteArray()

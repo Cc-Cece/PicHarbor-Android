@@ -55,6 +55,14 @@ class MainActivity:ComponentActivity() {
             cleanupIds=emptyList();localIds=emptyList()
         }
     }
+    override fun onStart() {
+        super.onStart()
+        model.graph.link.startPresence()
+    }
+    override fun onStop() {
+        model.graph.link.stopPresence()
+        super.onStop()
+    }
     override fun onCreate(savedInstanceState:Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()

@@ -21,10 +21,11 @@ data class LinkHttp(val code:Int,val body:ByteArray,val fingerprint:String)
 /** One HTTPS request per TLS connection. The certificate pin is the authentication. */
 class LinkTransport {
     @Volatile private var active:Socket?=null
+    private val gate=Any()
 
     fun close(){runCatching{active?.close()}}
 
-    fun exchange(host:String,port:Int,pin:String,build:(String)->LinkRequest):LinkHttp {
+    fun exchange(host:String,port:Int,pin:String,build:(String)->LinkRequest):LinkHttp = synchronized(gate) {
         val trust=PinTrust(pin)
         val context=SSLContext.getInstance("TLS")
         context.init(null,arrayOf<TrustManager>(trust),SecureRandom())
@@ -50,7 +51,7 @@ class LinkTransport {
             val request=build(trust.fingerprint)
             writeRequest(ssl.outputStream,host,request)
             val (code,body)=readHttp(ssl.inputStream)
-            return LinkHttp(code,body,trust.fingerprint)
+            LinkHttp(code,body,trust.fingerprint)
         } finally {
             runCatching{active?.close()}
             active=null

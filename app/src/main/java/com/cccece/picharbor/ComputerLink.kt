@@ -19,6 +19,7 @@ import java.net.SocketTimeoutException
 import java.security.MessageDigest
 
 data class LinkProgress(val running:Boolean=false,val phase:String="",val done:Int=0,val total:Int=0,val bytes:Long=0,val error:String="",val target:String="")
+data class LinkAsk(val offerId:String,val count:Int,val title:String,val target:LinkTarget,val mediaIds:List<String>)
 
 /** Phone to a Windows computer on the same LAN. Original files only; motion photos stay whole. */
 class ComputerLink(private val app:Application) {
@@ -26,6 +27,7 @@ class ComputerLink(private val app:Application) {
     val progress=MutableStateFlow(LinkProgress())
     val listening=MutableStateFlow(false)
     val hint=MutableStateFlow("")
+    val incoming=MutableStateFlow<LinkAsk?>(null)
     var notifier:(LinkProgress)->Unit={}
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     private val transport=LinkTransport()
@@ -34,9 +36,12 @@ class ComputerLink(private val app:Application) {
     private val cancelled=java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile private var beacon:MulticastSocket?=null
     @Volatile private var discovery:Job?=null
+    @Volatile private var presence:Job?=null
     @Volatile private var pending:Pending?=null
     @Volatile private var generation=0
-    private data class Pending(val target:LinkTarget,val ids:List<String>?)
+    private val responding=java.util.concurrent.atomic.AtomicBoolean(false)
+    private data class Pending(val target:LinkTarget,val ids:List<String>?,val offerId:String?=null)
+    private data class Session(val target:LinkTarget,val token:String,val pin:String,val blocked:String?=null)
     private data class SendPlan(val mediaId:String,val id:String,val name:String,val size:Long,val created:Long,val sha256:String)
 
     fun paired(fingerprint:String)=identity.isPaired(fingerprint)
@@ -99,6 +104,43 @@ class ComputerLink(private val app:Application) {
         return true
     }
 
+    fun startPresence() {
+        if(presence?.isActive==true)return
+        presence=scope.launch {
+            while(isActive) {
+                runCatching{checkIncoming()}
+                delay(3_000)
+            }
+        }
+    }
+
+    fun stopPresence() {
+        presence?.cancel()
+        presence=null
+    }
+
+    fun confirmIncoming() {
+        val ask=incoming.value?:return
+        if(progress.value.running)return
+        responding.set(true)
+        incoming.value=null
+        pending=Pending(ask.target,ask.mediaIds,ask.offerId)
+        cancelled.set(false)
+        ContextCompat.startForegroundService(app,android.content.Intent(app,ComputerLinkService::class.java))
+    }
+
+    fun declineIncoming() {
+        if(responding.get())return
+        val ask=incoming.value?:return
+        incoming.value=null
+        scope.launch {
+            runCatching {
+                val session=connect(ask.target)
+                call(session,"POST","/v1/offers/${ask.offerId}/reject",ByteArray(0))
+            }
+        }
+    }
+
     fun cancel() {
         cancelled.set(true)
         transport.close()
@@ -107,60 +149,250 @@ class ComputerLink(private val app:Application) {
     suspend fun execute() {
         val request=pending?:return
         cancelled.set(false)
-        var activePin=request.target.pin
         try {
             publish(LinkProgress(running=true,phase="正在连接 ${request.target.name.ifBlank{request.target.host}}",target=request.target.host))
-            var token=openSession(request.target,activePin){activePin=it}
-            val plans=prepare(request.ids)
-            if(plans.isEmpty()) {
-                publish(LinkProgress(phase="没有可发送的照片",error="没有可发送的照片",target=request.target.host))
+            var session=connect(request.target)
+            val checked=checkIn(session)
+            session=checked
+            val blocked=checked.blocked
+            if(blocked!=null) {
+                publish(LinkProgress(phase=blocked,error=blocked,target=session.target.host))
                 return
             }
-            publish(LinkProgress(running=true,phase="正在核对 ${plans.size} 项",total=plans.size,target=request.target.host))
-            var manifest=authed(request.target,activePin,token,"POST","/v1/manifest",jsonHeaders(),manifestBody(plans)){activePin=it}
-            if(manifest.code==401) {
-                token=openSession(request.target.copy(code=""),activePin){activePin=it}
-                manifest=authed(request.target,activePin,token,"POST","/v1/manifest",jsonHeaders(),manifestBody(plans)){activePin=it}
-            }
-            if(manifest.code!=200)throw LinkRejected(manifest.code,errorOf(manifest),"电脑没有接受文件列表")
-            val listed=JSONObject(manifest.body.toString(Charsets.UTF_8))
-            val need=stringSet(listed.optJSONArray("need"))
-            val have=stringSet(listed.optJSONArray("have"))
-            var done=0
-            var failed=0
-            var sent=0L
-            for(plan in plans) {
-                if(cancelled.get())throw LinkCancelled()
-                if(plan.id in have) {
-                    done++
-                    publish(LinkProgress(running=true,phase="电脑上已有 ${plan.name}",done=done,total=plans.size,bytes=sent,target=request.target.host))
-                    continue
-                }
-                if(plan.id !in need) {
-                    failed++
-                    continue
-                }
+            if(request.offerId!=null) {
+                val offerId=request.offerId
+                call(session,"POST","/v1/offers/$offerId/accept",ByteArray(0))
                 try {
-                    publish(LinkProgress(running=true,phase="正在发送 ${plan.name}",done=done,total=plans.size,bytes=sent,target=request.target.host))
-                    upload(request.target,plan,token,activePin,{activePin=it}){token=it}
-                    sent+=plan.size
-                    done++
-                } catch(error:LinkCancelled) {
-                    throw error
-                } catch(_:Exception) {
-                    failed++
+                    val plans=if(request.ids.isNullOrEmpty())emptyList() else prepare(request.ids)
+                    sendPlans(session,plans)
+                } finally {
+                    runCatching{call(session,"POST","/v1/offers/$offerId/finish",ByteArray(0))}
                 }
+                return
             }
-            val summary=if(failed==0)"已发送 $done 项" else "已发送 $done 项"
-            val problem=if(failed>0)"$failed 项没有送出" else ""
-            publish(LinkProgress(phase=summary,done=done,total=plans.size,bytes=sent,error=problem,target=request.target.host))
+            val plans=prepare(request.ids)
+            publish(LinkProgress(running=true,phase="正在等待电脑确认…",total=plans.size,target=session.target.host))
+            val offerId=createOffer(session,if(request.ids==null)"library" else "selected",plans.size)
+            if(!waitForComputer(session,offerId)) {
+                publish(LinkProgress(phase="电脑没有确认",error="电脑没有确认",target=session.target.host))
+                return
+            }
+            try{sendPlans(session,plans)}finally{runCatching{call(session,"POST","/v1/offers/$offerId/finish",ByteArray(0))}}
         } catch(_:LinkCancelled) {
             publish(LinkProgress(phase="已停止发送",error="已停止发送",target=request.target.host))
         } catch(error:Exception) {
             publish(LinkProgress(phase="发送没有完成",error=error.message?:"发送没有完成",target=request.target.host))
         } finally {
             pending=null
+            responding.set(false)
         }
+    }
+
+    private fun connect(target:LinkTarget):Session {
+        val hosts=LinkProtocol.orderAddresses(listOf(target.host)+target.alts,localIpv4())
+        var last:Exception?=null
+        for((index,host) in hosts.withIndex()) {
+            try {
+                var pin=target.pin
+                val token=openSession(target.copy(host=host),pin,if(index==0)3 else 1){pin=it}
+                return Session(target.copy(host=host),token,pin)
+            } catch(error:LinkRejected) {
+                if(error.error!="network"||index==hosts.lastIndex)throw error
+                last=error
+            }
+        }
+        throw last?:LinkRejected(0,"network","无法连接这台电脑")
+    }
+
+    private suspend fun checkIncoming() {
+        if(progress.value.running||responding.get())return
+        val endpoint=identity.endpoint()?:return
+        val target=LinkTarget(endpoint.host,endpoint.port,endpoint.fingerprint,"",endpoint.name,endpoint.alts)
+        val session=try{checkIn(connect(target))}catch(_:Exception){return}
+        if(progress.value.running||responding.get()||incoming.value!=null)return
+        val blocked=session.blocked
+        if(blocked!=null) {
+            if(hint.value!=blocked)hint.value=blocked
+            return
+        }
+        if(incoming.value!=null)return
+        val listed=JSONObject(call(session,"GET","/v1/offers",ByteArray(0)).toString(Charsets.UTF_8))
+        val offers=listed.optJSONArray("offers")?:JSONArray()
+        var offer:JSONObject?=null
+        for(index in 0 until offers.length()) {
+            val item=offers.optJSONObject(index)?:continue
+            if(item.optString("direction")=="computer-to-phone"){offer=item;break}
+        }
+        val chosen=offer?:return
+        val id=chosen.optString("id")
+        if(id.isEmpty())return
+        val scope=chosen.optString("scope").ifBlank{"all"}
+        val entries=mediaFor(scope,null)
+        incoming.value=LinkAsk(id,entries.size,"将发送 ${entries.size} 项到电脑",session.target,entries.map{it.id})
+    }
+
+    private fun checkIn(session:Session):Session {
+        val report=LinkArchiveFile.report()
+        val raw=report.value?.trim()?.ifEmpty{null}
+        val presented=when {
+            raw!=null->raw
+            report.unreadable->null
+            else->identity.archiveCode()
+        }
+        val unreadable=report.unreadable&&presented==null
+        val body=JSONObject().put("name",Build.MODEL).put("platform","android").put("directory",report.directoryReady).put("unreadable",unreadable)
+        if(presented!=null)body.put("archiveId",presented)
+        val hello=JSONObject(call(session,"POST","/v1/hello",body.toString().toByteArray(Charsets.UTF_8)).toString(Charsets.UTF_8))
+        val deliver=hello.optString("deliver").trim()
+        var current=session
+        if(LinkProtocol.usableArchive(deliver)) {
+            identity.storeArchive(deliver)
+            LinkArchiveFile.write(deliver)
+            val again=JSONObject().put("name",Build.MODEL).put("platform","android").put("directory",true).put("unreadable",false).put("archiveId",deliver)
+            val echoed=JSONObject(call(session,"POST","/v1/hello",again.toString().toByteArray(Charsets.UTF_8)).toString(Charsets.UTF_8))
+            if(echoed.optBoolean("conflict"))return session.copy(blocked="这台手机的身份和电脑上的记录不一致。请确认是不是连错了设备。")
+            current=session
+        } else if(hello.optBoolean("conflict")) {
+            return session.copy(blocked="这台手机的身份和电脑上的记录不一致。请确认是不是连错了设备。")
+        }
+        val usable=when {
+            LinkProtocol.usableArchive(deliver)->deliver
+            presented!=null&&LinkProtocol.usableArchive(presented)->presented
+            else->identity.archiveCode()
+        }
+        if(usable==null) {
+            val message=when {
+                unreadable->"暂时读不到识别码，没有生成新的识别码。"
+                raw!=null->"识别码文件里的内容不能用。"
+                else->"还没有这台手机的识别码。"
+            }
+            return current.copy(blocked=message)
+        }
+        return current
+    }
+
+    private fun createOffer(session:Session,scope:String,count:Int):String {
+        val body=JSONObject().put("direction","phone-to-computer").put("scope",scope).put("count",count)
+        val created=JSONObject(call(session,"POST","/v1/offers",body.toString().toByteArray(Charsets.UTF_8)).toString(Charsets.UTF_8))
+        val id=created.optString("id")
+        if(id.isEmpty())throw LinkRejected(0,"no_offer","电脑没有接受这次请求")
+        return id
+    }
+
+    private fun waitForComputer(session:Session,offerId:String):Boolean {
+        val deadline=System.currentTimeMillis()+120_000
+        while(System.currentTimeMillis()<deadline) {
+            if(cancelled.get()) {
+                runCatching{call(session,"POST","/v1/offers/$offerId/reject",ByteArray(0))}
+                throw LinkCancelled()
+            }
+            val listed=JSONObject(call(session,"GET","/v1/offers",ByteArray(0)).toString(Charsets.UTF_8))
+            if(listed.optBoolean("upload"))return true
+            val offers=listed.optJSONArray("offers")?:JSONArray()
+            var seen=false
+            for(index in 0 until offers.length()) if(offers.optJSONObject(index)?.optString("id")==offerId)seen=true
+            if(!seen)return false
+            try{Thread.sleep(1_000)}catch(_:InterruptedException){throw LinkCancelled()}
+        }
+        return false
+    }
+
+    private fun sendPlans(session:Session,plans:List<SendPlan>) {
+        if(plans.isEmpty()) {
+            publish(LinkProgress(phase="已发送 0 项",done=0,total=0,target=session.target.host))
+            return
+        }
+        publish(LinkProgress(running=true,phase="正在核对 ${plans.size} 项",total=plans.size,target=session.target.host))
+        var token=session.token
+        var pin=session.pin
+        var manifest=authed(session.target,pin,token,"POST","/v1/manifest",jsonHeaders(),manifestBody(plans)){pin=it}
+        if(manifest.code==401) {
+            token=openSession(session.target.copy(code=""),pin){pin=it}
+            manifest=authed(session.target,pin,token,"POST","/v1/manifest",jsonHeaders(),manifestBody(plans)){pin=it}
+        }
+        if(manifest.code!=200)throw LinkRejected(manifest.code,errorOf(manifest),reason(errorOf(manifest),"电脑没有接受文件列表"))
+        val listed=JSONObject(manifest.body.toString(Charsets.UTF_8))
+        val need=stringSet(listed.optJSONArray("need"))
+        val have=stringSet(listed.optJSONArray("have"))
+        var done=0
+        var failed=0
+        var sent=0L
+        for(plan in plans) {
+            if(cancelled.get())throw LinkCancelled()
+            if(plan.id in have) {
+                done++
+                publish(LinkProgress(running=true,phase="电脑上已有 ${plan.name}",done=done,total=plans.size,bytes=sent,target=session.target.host))
+                continue
+            }
+            if(plan.id !in need) {
+                failed++
+                continue
+            }
+            try {
+                publish(LinkProgress(running=true,phase="正在发送 ${plan.name}",done=done,total=plans.size,bytes=sent,target=session.target.host))
+                upload(session.target,plan,token,pin,{pin=it}){token=it}
+                sent+=plan.size
+                done++
+            } catch(error:LinkCancelled) {
+                throw error
+            } catch(_:Exception) {
+                failed++
+            }
+        }
+        val problem=if(failed>0)"$failed 项没有送出" else ""
+        publish(LinkProgress(phase="已发送 $done 项",done=done,total=plans.size,bytes=sent,error=problem,target=session.target.host))
+    }
+
+    private fun call(session:Session,method:String,path:String,body:ByteArray):ByteArray {
+        var pin=session.pin
+        var token=session.token
+        var http=authed(session.target,pin,token,method,path,jsonHeaders(),body){pin=it}
+        if(http.code==401) {
+            token=openSession(session.target.copy(code=""),pin){pin=it}
+            http=authed(session.target,pin,token,method,path,jsonHeaders(),body){pin=it}
+        }
+        if(http.code!=200)throw LinkRejected(http.code,errorOf(http),reason(errorOf(http),"电脑没有接受这次请求"))
+        return http.body
+    }
+
+    private suspend fun mediaFor(scope:String,ids:List<String>?):List<MediaEntry> {
+        val chosen=ids?.toSet()
+        return (app as PicHarborApp).graph.dao.media().filter{chosen==null||it.id in chosen}.filter{entry->
+            if(!scope.startsWith("range:"))return@filter true
+            val parts=scope.split(':')
+            if(parts.size<3)return@filter false
+            val captured=millis(entry.captured)
+            if(captured<=0)return@filter false
+            try {
+                val zone=java.time.ZoneId.systemDefault()
+                val from=java.time.LocalDate.parse(parts[1]).atStartOfDay(zone).toInstant().toEpochMilli()
+                val end=java.time.LocalDate.parse(parts[2]).plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+                captured in from until end
+            } catch(_:Exception) {
+                false
+            }
+        }
+    }
+
+    private fun localIpv4():String? {
+        val interfaces=NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
+        for(nif in interfaces) {
+            if(!nif.isUp||nif.isLoopback)continue
+            for(address in nif.inetAddresses) if(address is Inet4Address&&!address.isLoopbackAddress)return address.hostAddress
+        }
+        return null
+    }
+
+    private fun reason(error:String,fallback:String)=when(error) {
+        "no_archive"->"请先在电脑上选择归档目录"
+        "no_offer"->"电脑没有接受这次请求"
+        "need_accept"->"电脑还没有确认"
+        else->fallback
+    }
+
+    private fun millis(value:Long):Long {
+        if(value<=0)return 0
+        return if(value>10_000_000_000L)value else value*1000
     }
 
     private suspend fun prepare(ids:List<String>?):List<SendPlan> {
@@ -240,8 +472,8 @@ class ComputerLink(private val app:Application) {
         }
     }
 
-    private fun openSession(target:LinkTarget,pin:String,pinOut:(String)->Unit):String {
-        val http=exchangeOnce(target.host,target.port,pin) { fingerprint ->
+    private fun openSession(target:LinkTarget,pin:String,attempts:Int=3,pinOut:(String)->Unit):String {
+        val http=exchangeOnce(target.host,target.port,pin,attempts) { fingerprint ->
             pinOut(fingerprint)
             if(target.code.isNotBlank()) pairBody(fingerprint,target.code) else sessionBody(fingerprint)
         }
@@ -260,6 +492,7 @@ class ComputerLink(private val app:Application) {
         val reported=json.optString("fp")
         if(reported.isNotEmpty()&&!reported.equals(http.fingerprint,true))throw LinkRejected(0,"pin","电脑证书和配对信息不一致")
         if(target.code.isNotBlank())identity.remember(http.fingerprint)
+        identity.saveEndpoint(target.host,target.port,http.fingerprint,json.optString("name").ifBlank{target.name},target.alts)
         return json.getString("token")
     }
 
@@ -293,9 +526,9 @@ class ComputerLink(private val app:Application) {
         }
     }
 
-    private fun exchangeOnce(host:String,port:Int,pin:String,build:(String)->LinkRequest):LinkHttp {
+    private fun exchangeOnce(host:String,port:Int,pin:String,attempts:Int=3,build:(String)->LinkRequest):LinkHttp {
         var last:Exception?=null
-        for(attempt in 0 until 3) {
+        for(attempt in 0 until attempts) {
             if(cancelled.get())throw LinkCancelled()
             try { return transport.exchange(host,port,pin,build) }
             catch(error:LinkCancelled){throw error}
@@ -304,7 +537,7 @@ class ComputerLink(private val app:Application) {
                 if(cancelled.get())throw LinkCancelled()
                 if(LinkTransport.pinFailure(error))throw LinkRejected(0,"pin","电脑证书和配对信息不一致")
                 last=error
-                if(attempt==2)break
+                if(attempt==attempts-1)break
                 sleep()
             }
         }
@@ -376,8 +609,17 @@ class ComputerLink(private val app:Application) {
     }
 
     private fun merge(found:DiscoveredComputer) {
-        val key="${found.host}:${found.port}:${found.fingerprint}"
-        synchronized(seen){seen[key]=found.copy(seenAt=System.currentTimeMillis())}
+        val now=System.currentTimeMillis()
+        synchronized(seen) {
+            val previous=seen[found.fingerprint]
+            val hosts=LinkProtocol.orderAddresses((found.hosts+listOf(found.host)+(previous?.hosts?:emptyList())),localIpv4())
+            val host=hosts.firstOrNull()?:found.host
+            seen[found.fingerprint]=found.copy(host=host,seenAt=now,hosts=hosts)
+            val known=identity.endpoint()
+            if(known?.fingerprint==found.fingerprint&&(known.host!=host||known.port!=found.port)) {
+                identity.saveEndpoint(host,found.port,found.fingerprint,found.name,hosts.filter{address->address!=host})
+            }
+        }
         publishSeen()
     }
 

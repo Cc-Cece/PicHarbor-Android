@@ -33,7 +33,7 @@ fun ComputerLinkScreen(vm:HarborViewModel) {
             Text("把照片发到正在等待的电脑。",style=MaterialTheme.typography.headlineSmall,modifier=Modifier.padding(top=8.dp,bottom=12.dp))
             val count=vm.computerIds?.size
             Text(if(count==null)"将发送已读取的照片和视频，每份原文件只发一次。" else "将发送选中的 $count 项，每份原文件只发一次。",style=MaterialTheme.typography.bodyMedium)
-            Helper("开始发送后可以关闭屏幕，手机会继续传输。请让电脑保持等待。")
+            Helper("电脑确认后可以关闭屏幕，手机会继续传输。确认这一步需要保持 PicHarbor 在前台。")
             Helper("不需要登录 Google 账号。只在同一局域网发送，不经过互联网中转。")
             if(progress.running||progress.phase.isNotEmpty()) {
                 Text(progress.phase,style=MaterialTheme.typography.titleMedium)
@@ -49,7 +49,7 @@ fun ComputerLinkScreen(vm:HarborViewModel) {
                     val paired=link.paired(computer.fingerprint)
                     SettingsRow(computer.name,"${computer.host}:${computer.port}"+if(paired)" · 已配对" else " · 需要配对码",Icons.Outlined.Computer,enabled=!progress.running,onClick={
                         if(paired) {
-                            if(link.launch(LinkTarget(computer.host,computer.port,computer.fingerprint,"",computer.name),vm.computerIds))vm.say("开始发送。可以关闭屏幕，电脑请保持等待。")
+                            if(link.launch(LinkTarget(computer.host,computer.port,computer.fingerprint,"",computer.name,computer.hosts.filter{it!=computer.host}),vm.computerIds))vm.say("正在等待电脑确认。请保持 PicHarbor 在前台。")
                         } else {ask=computer;askCode=""}
                     })
                 }
@@ -59,8 +59,8 @@ fun ComputerLinkScreen(vm:HarborViewModel) {
             OutlinedButton(onClick={
                 val target=LinkProtocol.parseQr(qr)
                 if(target==null)vm.say("二维码内容无法识别")
-                else if(link.launch(target,vm.computerIds))vm.say("开始发送。可以关闭屏幕，电脑请保持等待。")
-            },enabled=!progress.running,modifier=Modifier.fillMaxWidth().padding(top=8.dp)){Text("使用二维码发送")}
+                else if(link.launch(target,vm.computerIds))vm.say("正在等待电脑确认。请保持 PicHarbor 在前台。")
+            },enabled=!progress.running,modifier=Modifier.fillMaxWidth().padding(top=8.dp)){Text("使用二维码连接")}
             SectionLabel("手动连接")
             OutlinedTextField(host,{host=it},label={Text("电脑地址")},singleLine=true,modifier=Modifier.fillMaxWidth())
             Spacer(Modifier.height(8.dp))
@@ -72,16 +72,26 @@ fun ComputerLinkScreen(vm:HarborViewModel) {
             Button(onClick={
                 val target=LinkProtocol.manual(host,port,pin,manualCode)
                 if(target==null)vm.say("请填写地址、端口、16 位指纹和 6 位配对码")
-                else if(link.launch(target,vm.computerIds))vm.say("开始发送。可以关闭屏幕，电脑请保持等待。")
-            },enabled=!progress.running,modifier=Modifier.fillMaxWidth().padding(top=8.dp,bottom=24.dp)){Text("手动连接并发送")}
+                else if(link.launch(target,vm.computerIds))vm.say("正在等待电脑确认。请保持 PicHarbor 在前台。")
+            },enabled=!progress.running,modifier=Modifier.fillMaxWidth().padding(top=8.dp,bottom=24.dp)){Text("手动连接")}
         }
     }
     val computer=ask
     if(computer!=null)AlertDialog(onDismissRequest={ask=null},title={Text(computer.name)},
         text={OutlinedTextField(askCode,{askCode=it.filter{ch->ch.isDigit()}.take(6)},label={Text("6 位配对码")},singleLine=true,modifier=Modifier.fillMaxWidth())},
         confirmButton={TextButton(onClick={
-            if(link.launch(LinkTarget(computer.host,computer.port,computer.fingerprint,askCode,computer.name),vm.computerIds))vm.say("开始发送。可以关闭屏幕，电脑请保持等待。")
+            if(link.launch(LinkTarget(computer.host,computer.port,computer.fingerprint,askCode,computer.name,computer.hosts.filter{it!=computer.host}),vm.computerIds))vm.say("正在等待电脑确认。请保持 PicHarbor 在前台。")
             ask=null
-        },enabled=askCode.length==6&&!progress.running){Text("发送")}},
+        },enabled=askCode.length==6&&!progress.running){Text("配对")}},
         dismissButton={TextButton(onClick={ask=null}){Text("取消")}})
+}
+
+@Composable
+fun ComputerAskDialog(vm:HarborViewModel) {
+    val ask by vm.graph.link.incoming.collectAsState()
+    val current=ask?:return
+    AlertDialog(onDismissRequest={vm.graph.link.declineIncoming()},title={Text("传到这台电脑")},
+        text={Text(current.title)},
+        confirmButton={TextButton(onClick={vm.graph.link.confirmIncoming()}){Text("确认发送")}},
+        dismissButton={TextButton(onClick={vm.graph.link.declineIncoming()}){Text("拒绝")}})
 }

@@ -149,6 +149,7 @@ fun HarborRoot(vm:HarborViewModel,onLogin:()->Unit,onPermissions:()->Unit,onPick
             SnackbarHost(snackbar,Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom=if(vm.page in setOf("photos","backup","me"))80.dp else 0.dp))
         }
         HarborSheets(vm,data,onLogin,onCleanup,onLocalDelete,onPickTree)
+        ComputerAskDialog(vm)
     }
 }
 

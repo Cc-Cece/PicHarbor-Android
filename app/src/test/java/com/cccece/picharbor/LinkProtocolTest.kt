@@ -29,6 +29,9 @@ class LinkProtocolTest {
         assertEquals(8443,qr.port)
         assertEquals(fingerprint,qr.pin)
         assertEquals("123456",qr.code)
+        assertTrue(qr.alts.isEmpty())
+        val withAlts=LinkProtocol.parseQr("picharbor://link?v=1&host=192.168.1.5&port=8443&fp=$fingerprint&code=123456&alts=10.0.0.8,192.168.1.5,127.0.0.1")
+        assertEquals(listOf("10.0.0.8"),withAlts!!.alts)
         assertNull(LinkProtocol.parseQr("https://example.com"))
         val manual=LinkProtocol.manual("192.168.1.5","8443",fingerprint.take(16),"123456")
         assertEquals(fingerprint.take(16),manual!!.pin)
@@ -40,7 +43,20 @@ class LinkProtocolTest {
         val found=LinkProtocol.parseBeacon(raw)
         assertEquals("Desk",found!!.name)
         assertEquals(47877,found.port)
+        assertEquals(listOf("10.0.0.8"),found.hosts)
+        val many=LinkProtocol.parseBeacon("""{"v":1,"name":"Desk","host":"10.0.0.8","hosts":["192.168.1.9","10.0.0.8","127.0.0.1"],"port":47877,"fp":"$fingerprint"}""".toByteArray())
+        assertEquals(listOf("10.0.0.8","192.168.1.9"),many!!.hosts)
+        assertEquals(listOf("192.168.1.9","10.0.0.8"),LinkProtocol.orderAddresses(many.hosts,"192.168.1.20"))
         assertNull(LinkProtocol.parseBeacon("""{"v":2,"name":"Desk","host":"10.0.0.8","port":1,"fp":"$fingerprint"}""".toByteArray()))
+    }
+
+    @Test fun archiveCodeRulesMatchTheComputer() {
+        assertTrue(LinkProtocol.usableArchive("PH-7K2M9Q"))
+        assertTrue(LinkProtocol.usableArchive("ABCDEFGH1234"))
+        assertFalse(LinkProtocol.usableArchive("android:PH-7K2M9Q"))
+        assertFalse(LinkProtocol.usableArchive("aaaa"))
+        assertFalse(LinkProtocol.usableArchive("n/a"))
+        assertFalse(LinkProtocol.usableArchive("bad&id"))
     }
 
     @Test fun blobIdIsShortHexNotTheContentUri() {

@@ -49,6 +49,36 @@ class LinkIdentity(context:Context) {
         prefs.edit().putStringSet("paired",next).apply()
     }
 
+    fun archiveCode():String? = prefs.getString("archive_code",null)?.trim()?.takeIf{LinkProtocol.usableArchive(it)}
+
+    fun storeArchive(code:String) {
+        val trimmed=code.trim()
+        if(!LinkProtocol.usableArchive(trimmed))return
+        prefs.edit().putString("archive_code",trimmed).apply()
+    }
+
+    fun endpoint():LinkEndpoint? {
+        val host=prefs.getString("endpoint_host",null)?.trim().orEmpty()
+        val port=prefs.getInt("endpoint_port",0)
+        val fingerprint=prefs.getString("endpoint_fp",null)?.trim()?.lowercase().orEmpty()
+        val name=prefs.getString("endpoint_name",null).orEmpty()
+        if(host.isEmpty()||port !in 1..65535||fingerprint.length!=64)return null
+        val alts=prefs.getString("endpoint_alts",null).orEmpty().split(',').map{it.trim()}.filter{it.isNotEmpty()&&it!=host}
+        return LinkEndpoint(host,port,fingerprint,name,alts)
+    }
+
+    fun saveEndpoint(host:String,port:Int,fingerprint:String,name:String,alts:List<String>) {
+        val clean=fingerprint.trim().lowercase()
+        if(host.isBlank()||port !in 1..65535||clean.length!=64)return
+        prefs.edit()
+            .putString("endpoint_host",host.trim())
+            .putInt("endpoint_port",port)
+            .putString("endpoint_fp",clean)
+            .putString("endpoint_name",name)
+            .putString("endpoint_alts",alts.filter{it.isNotBlank()&&it!=host.trim()}.distinct().joinToString(","))
+            .apply()
+    }
+
     private fun paired()=prefs.getStringSet("paired",emptySet())?.toSet()?:emptySet()
 
     private fun ensure():KeyPair=synchronized(this) {
