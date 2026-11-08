@@ -113,8 +113,26 @@ jobs:
           echo "::add-mask::$KEY_PASS"
           echo "PICHARBOR_KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
 
+      - name: Prepare verified Gradle distribution
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Same official 8.13 asset as the wrapper, without the failing web-download redirect.
+          GRADLE_ZIP="$RUNNER_TEMP/gradle-8.13-bin.zip"
+          for attempt in 1 2 3; do
+            if gh api -H 'Accept: application/octet-stream' \
+              repos/gradle/gradle-distributions/releases/assets/232373824 > "$GRADLE_ZIP"; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep 5
+          done
+          echo "20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78  $GRADLE_ZIP" | sha256sum -c -
+          unzip -q "$GRADLE_ZIP" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gradle-8.13/bin" >> "$GITHUB_PATH"
+
       - name: Run unit tests
-        run: ./gradlew testReleaseUnitTest --console=plain
+        run: gradle testReleaseUnitTest --console=plain
 
       - name: Check diagnostic transport isolation
         run: |
@@ -124,7 +142,7 @@ jobs:
       - name: Build release APK (arm64-v8a)
         run: |
           BUILD_PYTHON=$(which python3)
-          ./gradlew assembleRelease "-PbuildPython=$BUILD_PYTHON" --console=plain
+          gradle assembleRelease "-PbuildPython=$BUILD_PYTHON" --console=plain
 
       - name: Inspect release APK integrity
         run: python tools/inspect_release.py
