@@ -44,7 +44,7 @@ object DiagnosticFields {
     private val secrets=Regex("(?i)(bearer\\s+\\S+|(?:password|passwd|token|oauth_token|authorization|cookie|secret|pin|signature)\\s*[:=]\\s*[^\\s,;]+)")
     private val address=Regex("(?i)(?:https?|socks5?)://\\S+")
     private val safe=Regex("^[A-Za-z0-9_.:-]{1,128}$")
-    val keys=setOf("action","operation","outcome","duration_ms","phase","kind","state","from_state","reason","code","error_type","cause_types","stack","endpoint","method","status","timeout_connect_ms","timeout_read_ms","retry_attempt","retry_limit","delay_ms","expected_bytes","source_read_bytes","transport_submitted_bytes","remote_confirmed_bytes","response_read_bytes","measurement","filename","item_count","total_bytes","concurrency","runnable","active","permit_limit","wait_ms","snapshot_id","last_progress_age_ms","started_age_ms","cancelled","available","engine_ready","previous_session","clean_exit","exit_reason","exit_status","exit_timestamp","trace_available","stop_reason","scheduler","accepted","worker_attempt","rule","certainty","fd_count","heap_bytes","thread_count","disk_available_bytes","network","network_validated","vpn","foreground","observer_gap_ms","in_flight","span","owner","waiters","request","attempt","source_kind","source_size","sdk","os","model","abi","version","python_stack","native_stack","socket_send_progress","dropped_events","write_failures","queue_depth","corrupt_lines","policy_version","setting_timeout_ms","effective_timeout_ms","sequence_gap","selected_start","selected_end","zone","provider","checks","approved","removed","result_count","actual_start","actual_end","evicted_files","errno","category")
+    val keys=setOf("action","operation","outcome","duration_ms","phase","kind","state","from_state","reason","code","error_type","cause_types","stack","endpoint","method","status","timeout_connect_ms","timeout_read_ms","retry_attempt","retry_limit","delay_ms","expected_bytes","source_read_bytes","transport_submitted_bytes","remote_confirmed_bytes","response_read_bytes","measurement","filename","item_count","total_bytes","concurrency","runnable","active","permit_limit","wait_ms","snapshot_id","last_progress_age_ms","started_age_ms","cancelled","available","engine_ready","previous_session","clean_exit","exit_reason","exit_status","exit_timestamp","trace_available","stop_reason","scheduler","accepted","worker_attempt","rule","certainty","fd_count","heap_bytes","thread_count","disk_available_bytes","network","network_validated","vpn","foreground","observer_gap_ms","in_flight","span","owner","waiters","request","attempt","source_kind","source_size","sdk","os","model","abi","version","python_stack","native_stack","socket_send_progress","dropped_events","write_failures","queue_depth","corrupt_lines","policy_version","setting_timeout_ms","effective_timeout_ms","sequence_gap","selected_start","selected_end","zone","provider","checks","approved","removed","result_count","actual_start","actual_end","evicted_files","errno","category","permit_owners")
     fun id(value:String)=value.takeIf{safe.matches(it)}?:"invalid"
     fun text(value:String):String=secrets.replace(email.replace(address.replace(value,"[REDACTED_URL]"),"[REDACTED_ACCOUNT]"),"[REDACTED]").replace(Regex("[\\p{Cntrl}]")," ").take(384)
     fun clean(value:JSONObject,depth:Int=0):JSONObject {
@@ -114,6 +114,8 @@ object Diagnostics {
     private var segment:File?=null
     private var segmentDay=""
     private val active=ConcurrentHashMap<String,Flight>()
+    private val waitingPermits=java.util.concurrent.atomic.AtomicInteger()
+    private val ownedPermits=ConcurrentHashMap<String,DiagnosticContext>()
     private val lastEmission=ConcurrentHashMap<String,Long>()
     @Volatile var foreground=false
     @Volatile private var mainBeat=SystemClock.elapsedRealtime()
@@ -164,10 +166,15 @@ object Diagnostics {
         runCatching {
             val now=SystemClock.elapsedRealtime()
             val key=context.span
-            if(name in setOf("operation.started","http.started","wait.started","engine.call_started")) {
+            val permitWait=name.startsWith("wait.")&&attrs.optString("kind")=="permit"
+            if(permitWait&&name=="wait.started")waitingPermits.incrementAndGet()
+            if(permitWait&&name=="wait.finished")waitingPermits.updateAndGet{(it-1).coerceAtLeast(0)}
+            if(name=="permit.acquired")ownedPermits[key]=context
+            if(name=="permit.released")ownedPermits.remove(key)
+            if(!permitWait&&name in setOf("operation.started","http.started","wait.started","engine.call_started")) {
                 if(active.size<256)active[key]=Flight(context,attrs.optString("operation",attrs.optString("endpoint",attrs.optString("kind",attrs.optString("action",name)))),now,now)
             }
-            if(name in setOf("operation.finished","http.finished","wait.finished","engine.call_finished")){
+            if(!permitWait&&name in setOf("operation.finished","http.finished","wait.finished","engine.call_finished")){
                 active.remove(key);lastEmission.remove(key)
                 if(name!="wait.finished")active.values.filter{it.context.trace==context.trace&&it.context.attempt==context.attempt}.forEach{it.progress=now}
             }
@@ -178,6 +185,8 @@ object Diagnostics {
                 if(before!=null&&now-before<10000)return
                 lastEmission[key]=now
             }
+            // Queued projects must not exhaust observation slots or the reserved event capacity.
+            if((permitWait||name=="transfer.progress"||name=="ui.snapshot")&&queue.remainingCapacity()<32){dropped.incrementAndGet();return}
             val row=makeEvent(name,context,attrs,level,producer).toString()
             if(row.toByteArray().size>16384||!queue.offer(row))dropped.incrementAndGet()
         }.onFailure{dropped.incrementAndGet()}
@@ -254,7 +263,7 @@ object Diagnostics {
             if(net!=lastNetwork){lastNetwork=net;event("environment.changed",attrs=JSONObject(net))}
         }
     }
-    fun snapshot():JSONObject=JSONObject().put("in_flight",JSONArray(active.values.take(32).map { f -> JSONObject().put("span",f.context.span).put("attempt",f.context.attempt).put("operation",f.operation).put("started_age_ms",SystemClock.elapsedRealtime()-f.started).put("last_progress_age_ms",SystemClock.elapsedRealtime()-f.progress) }))
+    fun snapshot():JSONObject=JSONObject().put("waiters",waitingPermits.get()).put("permit_owners",JSONArray(ownedPermits.values.take(8).map{JSONObject().put("span",it.span).put("attempt",it.attempt).put("owner",it.item)})).put("in_flight",JSONArray(active.values.take(32).map { f -> JSONObject().put("span",f.context.span).put("attempt",f.context.attempt).put("operation",f.operation).put("started_age_ms",SystemClock.elapsedRealtime()-f.started).put("last_progress_age_ms",SystemClock.elapsedRealtime()-f.progress) }))
         .put("active",active.size).put("heap_bytes",Debug.getPss()*1024L).put("fd_count",File("/proc/self/fd").list()?.size?:-1).put("thread_count",Thread.activeCount()).put("disk_available_bytes",directory?.usableSpace?:0)
         .put("foreground",foreground).put("python_stack","unavailable").put("native_stack","unavailable").put("socket_send_progress","unavailable")
     private fun network():JSONObject=runCatching {

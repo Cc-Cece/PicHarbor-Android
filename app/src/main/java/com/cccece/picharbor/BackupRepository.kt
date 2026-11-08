@@ -138,6 +138,7 @@ class BackupRepository(private val graph:AppGraph) {
                         var acquired=false
                         try { semaphore.withPermit {
                         acquired=true
+                        Diagnostics.event("permit.acquired",waiting)
                         Diagnostics.event("wait.finished",waiting,JSONObject().put("kind","permit").put("wait_ms",android.os.SystemClock.elapsedRealtime()-waitStarted))
                         if(stopping.get()||externalCancelled()||authenticationFailure.get()||graph.switching.value)return@withPermit
                         if(graph.dao.item(item.id)?.jobId!=job.id)return@withPermit
