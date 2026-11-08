@@ -14,6 +14,8 @@ with zipfile.ZipFile(apk) as archive:
     assert 'lib/arm64-v8a/libpython3.13.so' in names
     assert all(name.startswith('lib/arm64-v8a/') for name in names if name.startswith('lib/'))
     assert 'assets/LICENSE.txt' in names and 'assets/NOTICE.txt' in names
+    assert 'assets/diagnostic-event.schema.json' in names and 'assets/diagnostic-format.md' in names
+    assert json.loads(archive.read('assets/diagnostic-event.schema.json'))['properties']['schema_version']['const'] == 1
     assert json.loads(archive.read('assets/engine-extension.json')) == extension, 'Stale packaged extension manifest'
     assert not any('diagnostic-auth' in name or name.startswith('assets/demo/') for name in names)
     with zipfile.ZipFile(io.BytesIO(archive.read('assets/chaquopy/app.imy'))) as python:

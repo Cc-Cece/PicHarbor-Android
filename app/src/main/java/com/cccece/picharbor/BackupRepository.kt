@@ -78,6 +78,7 @@ class BackupRepository(private val graph:AppGraph) {
     }
 
     suspend fun pause() {
+        Diagnostics.event("cancel.requested",attrs=JSONObject().put("kind","backup_pause"))
         stopping.set(true)
         activeJob.value.takeIf{it.isNotEmpty()}?.let { graph.dao.jobState(it,"pausing") }
     }
@@ -121,6 +122,8 @@ class BackupRepository(private val graph:AppGraph) {
                     graph.dao.jobState(job.id,"waiting");notice.value="等待 Wi-Fi 连接";return false
                 }
                 activeJob.value=job.id;graph.dao.jobState(job.id,"running")
+                val jobDiagnostic=DiagnosticContext(job=job.id)
+                Diagnostics.event("job.state_changed",jobDiagnostic,JSONObject().put("state","running").put("concurrency",settings.concurrency).put("setting_timeout_ms",settings.timeout*1000).put("retry_limit",settings.retries))
                 val items=graph.dao.items(job.id).filter{it.state in setOf("queued","album_pending","hashing","checking","uploading","finalizing","finalizing_album")}
                 val semaphore=Semaphore(settings.concurrency)
                 val authenticationFailure=AtomicBoolean(false)
@@ -128,7 +131,14 @@ class BackupRepository(private val graph:AppGraph) {
                 val completed=java.util.concurrent.atomic.AtomicInteger(graph.dao.items(job.id).count{it.state in setOf("done","exists")})
                 val total=graph.dao.items(job.id).size
                 supervisorScope {
-                    items.map { item -> async(Dispatchers.IO) { semaphore.withPermit {
+                    items.map { item -> async(Dispatchers.IO) {
+                        val waiting=jobDiagnostic.child().copy(item=item.id)
+                        val waitStarted=android.os.SystemClock.elapsedRealtime()
+                        Diagnostics.event("wait.started",waiting,JSONObject().put("kind","permit"))
+                        var acquired=false
+                        try { semaphore.withPermit {
+                        acquired=true
+                        Diagnostics.event("wait.finished",waiting,JSONObject().put("kind","permit").put("wait_ms",android.os.SystemClock.elapsedRealtime()-waitStarted))
                         if(stopping.get()||externalCancelled()||authenticationFailure.get()||graph.switching.value)return@withPermit
                         if(graph.dao.item(item.id)?.jobId!=job.id)return@withPermit
                         if(job.automatic&&graph.dao.pendingManual(account)>0){preempted.set(true);return@withPermit}
@@ -137,6 +147,8 @@ class BackupRepository(private val graph:AppGraph) {
                         process(job,item,settings,{graph.switching.value||stopping.get()||externalCancelled()||authenticationFailure.get()||(settings.wifi&&!job.allowMobile&&!onWifi())})
                         if(graph.dao.item(item.id)?.error in setOf("LOGIN_REQUIRED","DEVICE_VERIFICATION","ENCRYPTED_TOKEN"))authenticationFailure.set(true)
                         val done=completed.incrementAndGet();notify("正在备份 · $done / $total",if(total>0)done*100/total else 0)
+                    } } finally {
+                        Diagnostics.event(if(acquired)"permit.released" else "wait.finished",waiting,JSONObject().put("kind","permit").put("outcome",if(acquired)"released" else "cancelled"))
                     } } }.awaitAll()
                 }
                 val updated=graph.dao.items(job.id)
@@ -150,6 +162,7 @@ class BackupRepository(private val graph:AppGraph) {
                     updated.any{it.state=="queued"}->"waiting"
                     else->"completed"
                 }
+                Diagnostics.event("job.state_changed",jobDiagnostic,JSONObject().put("state",state))
                 graph.dao.putJob(job.copy(state=state,completedAt=if(state in setOf("paused","waiting","auth_required","queued"))0 else System.currentTimeMillis()))
                 if(!job.automatic&&state in setOf("completed","needs_attention")&&!graph.visible.get()) {
                     TransferNotifications.completed(graph.app,job,updated)
@@ -173,12 +186,14 @@ class BackupRepository(private val graph:AppGraph) {
     }
     private suspend fun process(job:BackupJob,item:BackupItem,settings:HarborSettings,cancelled:()->Boolean) {
         var latest=item
+        val diagnostic=DiagnosticContext(job=job.id,item=item.id,attempt=UUID.randomUUID().toString())
+        Diagnostics.event("item.state_changed",diagnostic,JSONObject().put("state","started").put("filename",item.name).put("retry_attempt",item.attempt+1))
         try {
             val media=graph.dao.media(item.mediaId)?:throw EngineFailure("FILE_ACCESS")
             val before=graph.media.current(media)?:throw EngineFailure("FILE_ACCESS")
             if(before.first!=media.size||before.second!=media.modified)throw EngineFailure("SOURCE_CHANGED")
             graph.dao.putItem(item.copy(state="hashing"))
-            val request=JSONObject().put("_account",job.account).put("uri",media.id).put("name",media.name).put("modified",media.modified)
+            val request=JSONObject().put("_diagnostics",diagnostic.json()).put("_account",job.account).put("uri",media.id).put("name",media.name).put("modified",media.modified)
                 .put("folder",media.albumFolder).put("quality",job.quality).put("album_mode",job.albumMode).put("album_value",job.albumValue)
                 .put("retries",settings.retries).put("same_name",job.automatic&&settings.sameName)
                 .put("remote_key",item.remoteKey).put("origin",item.origin)
@@ -203,12 +218,15 @@ class BackupRepository(private val graph:AppGraph) {
                 if(graph.media.current(media)!=before){graph.dao.invalidate(job.account,media.id);throw EngineFailure("SOURCE_CHANGED")}
                 latest=uploaded(job,media,latest,result)
             }
+            Diagnostics.event("item.state_changed",diagnostic,JSONObject().put("state",state).put("code",result.optString("error")))
             graph.dao.putItem(latest.copy(state=state,error=result.optString("error"),attempt=item.attempt+1))
         } catch(error:Exception) {
             val code=(error as? EngineFailure)?.code?:if(cancelled())"CANCELLED" else "FILE_ACCESS"
+            Diagnostics.event("error.captured",diagnostic,DiagnosticFields.error(error).put("code",code),"ERROR")
             graph.dao.putItem(latest.copy(state=if(code=="CANCELLED") {if(latest.remoteKey.isEmpty())"queued" else "album_pending"} else "failed",error=code,attempt=item.attempt+1))
             if(code=="LOGIN_REQUIRED")notice.value=Messages.error(code)
         } finally {
+            Diagnostics.event("item.attempt_finished",diagnostic,JSONObject().put("cancelled",cancelled()))
             inFlight.update{it-item.id}
         }
     }

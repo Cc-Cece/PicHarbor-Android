@@ -137,10 +137,13 @@ class MediaRepository(private val context: Context, private val dao: HarborDao, 
 
 /** Java methods called by Python; fd ownership stays with the returned handle. */
 class SourceHandle(val path:String, val size:Long, private val input:android.os.ParcelFileDescriptor?, private val temporary:File?) : AutoCloseable {
-    override fun close(){input?.close();temporary?.delete()}
+    private val reference=DiagnosticContext()
+    init {Diagnostics.event("resource.opened",reference,org.json.JSONObject().put("source_kind",if(temporary==null)"file_descriptor" else "staging").put("source_size",size))}
+    override fun close(){try {input?.close();temporary?.delete()} finally {Diagnostics.event("resource.closed",reference)}}
 }
 class SourceBridge(private val context:Context) {
     fun open(uri:String,name:String):SourceHandle {
+        Diagnostics.event("source.open_requested",attrs=org.json.JSONObject().put("source_kind",if(uri.startsWith("content://media/"))"media_store" else "document_provider").put("filename",name))
         val descriptor=context.contentResolver.openFileDescriptor(Uri.parse(uri),"r") ?: throw SecurityException("NO_ACCESS")
         val path="/proc/self/fd/${descriptor.fd}"
         try {

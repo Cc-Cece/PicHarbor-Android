@@ -88,6 +88,9 @@ fun HarborRoot(vm:HarborViewModel,onLogin:()->Unit,onPermissions:()->Unit,onPick
             TransferProgress(),"",CleanupProgress(),statistics=statistics.filter{it.jobId in jobIds})
     }
     val data=base.copy(transfer=transfer,activeJob=active,cleanup=if(cleanup.account==settings.account)cleanup else CleanupProgress())
+    LaunchedEffect(data.activeJob,data.transfer.item,data.transfer.phase) {
+        if(data.activeJob.isNotEmpty())Diagnostics.event("ui.snapshot",DiagnosticContext(job=data.activeJob,item=data.transfer.item),org.json.JSONObject().put("phase",data.transfer.phase).put("source_read_bytes",data.transfer.bytes))
+    }
     val hasStatus=topBackupJob(data)!=null||data.cleanup.running
     val snackbar=remember{SnackbarHostState()}
     val pageState=rememberSaveableStateHolder()

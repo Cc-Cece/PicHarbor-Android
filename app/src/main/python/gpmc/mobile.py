@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
+import harbor_diagnostics as diag
 from .api import Api
 from .client import Client
 from .db_update_parser import parse_db_update
@@ -62,7 +63,7 @@ class MobileApi(Api):
 
     @property
     def bearer_token(self):
-        with self.auth_lock:
+        with diag.observed_lock(self.auth_lock, "auth_lock"):
             return super().bearer_token
 
     def _new_session(self):
@@ -148,15 +149,16 @@ class MobileService:
     def operation(self, exclusive=False):
         # Keep account/client/cache immutable for all in-flight operations,
         # while allowing concurrent uploads within that account.
-        with self.lifecycle:
-            if exclusive: self.waiting_writers += 1
-            try:
-                while self.exclusive_operation or (self.active_operations if exclusive else self.waiting_writers):
-                    self.lifecycle.wait(0.2)
-                if exclusive: self.exclusive_operation = True
-                else: self.active_operations += 1
-            finally:
-                if exclusive: self.waiting_writers -= 1
+        with diag.operation("lifecycle", "wait", kind="lifecycle"):
+            with self.lifecycle:
+                if exclusive: self.waiting_writers += 1
+                try:
+                    while self.exclusive_operation or (self.active_operations if exclusive else self.waiting_writers):
+                        self.lifecycle.wait(0.2)
+                    if exclusive: self.exclusive_operation = True
+                    else: self.active_operations += 1
+                finally:
+                    if exclusive: self.waiting_writers -= 1
         try:
             yield
         finally:
@@ -166,13 +168,14 @@ class MobileService:
                 self.lifecycle.notify_all()
 
     def connect(self, credential, timeout=60):
-        with self.connection_lock:
+        with diag.observed_lock(self.connection_lock, "connection_lock"):
             if self.client is None or self.credential != credential:
                 self.client = None
                 client = Client(auth_data=credential, timeout=timeout, log_level="CRITICAL")
                 api = MobileApi(client.auth_data, language=client.language, timeout=timeout)
                 _ = api.bearer_token
                 client.api = api
+                diag.install_api(api)
                 self.client = client
                 self.credential = client.auth_data
                 self.account = parse_email(client.auth_data).strip().lower()
@@ -202,6 +205,7 @@ class MobileService:
             raise Cancelled()
 
     def emit(self, callback, phase, completed=0, total=0):
+        diag.progress(phase, completed, total)
         self.check(callback)
         if callback:
             callback.onEvent(json.dumps({"phase": phase, "completed": completed, "total": total}))
@@ -218,7 +222,9 @@ class MobileService:
 
     def process(self, item, bridge, callback):
         self.check(callback)
-        handle = bridge.open(item["uri"], item["name"])
+        with diag.operation("source_open"):
+            handle = bridge.open(item["uri"], item["name"])
+        diag.emit("resource.opened", {"source_size": int(handle.getSize())})
         try:
             path = str(handle.getPath())
             digest = self.hashes(path, callback)
@@ -227,7 +233,7 @@ class MobileService:
                 return {**result, "state": "failed", "error": "SOURCE_CHANGED"}
             if digest["size"] != int(handle.getSize()):
                 return {**result, "state": "failed", "error": "SOURCE_CHANGED"}
-            with self.content_locks[int(digest["sha1"][:8],16) % len(self.content_locks)]:
+            with diag.observed_lock(self.content_locks[int(digest["sha1"][:8],16) % len(self.content_locks)], "content_lock"):
                 self.emit(callback, "checking", 0, digest["size"])
                 remote = self.client.api.find_remote_media_by_hash(bytes.fromhex(digest["sha1"]))
                 if remote:
@@ -267,6 +273,7 @@ class MobileService:
                             code = error_code(error)
                             if code not in ("NETWORK_ERROR", "RATE_LIMITED") or attempt >= maximum:
                                 raise
+                            diag.emit("retry.scheduled", {"code": code, "retry_attempt": attempt + 1, "retry_limit": maximum, "delay_ms": min(30, 2 ** (attempt + 1))*1000})
                             self.emit(callback, "retrying", attempt + 1, maximum)
                             deadline = time.monotonic() + min(30, 2 ** (attempt + 1))
                             while time.monotonic() < deadline:
@@ -281,7 +288,7 @@ class MobileService:
                     if mode == "existing" and value:
                         self.client.add_to_existing_album([result["remote_key"]], value)
                     elif mode in ("folder", "custom") and value:
-                        with self.sync_lock:
+                        with diag.observed_lock(self.sync_lock, "sync_lock"):
                             with closing(sqlite3.connect(self.db_path)) as db, db:
                                 found = db.execute("SELECT album_key FROM albums WHERE title=? ORDER BY album_key LIMIT 1", (value,)).fetchone()
                             if found:
@@ -297,6 +304,7 @@ class MobileService:
                 return {**result, "state": "exists" if result["origin"] == "content_exists" else "done"}
         finally:
             handle.close()
+            diag.emit("resource.closed")
 
     def _consume(self, response, snapshot_id=""):
         token, resume, _, deleted = parse_db_update(response)
@@ -343,7 +351,7 @@ class MobileService:
         return token, resume
 
     def synchronize(self, callback=None, full=False):
-        with self.sync_lock:
+        with diag.observed_lock(self.sync_lock, "sync_lock"):
             with closing(sqlite3.connect(self.db_path)) as db, db:
                 token, ready = db.execute("SELECT token,ready FROM state WHERE id=1").fetchone()
             if full: token, ready = "", False
@@ -533,7 +541,7 @@ class MobileService:
             with self.operation(action in ("connect", "logout")):
                 values = json.loads(payload) if isinstance(payload, str) else payload
                 if action == "logout":
-                    with self.connection_lock:
+                    with diag.observed_lock(self.connection_lock, "connection_lock"):
                         self.client = None; self.credential = ""; self.account = ""
                     return json.dumps({"ok": True})
                 if action == "connect": return json.dumps({"ok": True, **self.connect(values["credential"], values.get("timeout",60))})
@@ -556,4 +564,5 @@ class MobileService:
                 else: return json.dumps({"ok": False, "error": "UNKNOWN_OPERATION"})
                 return json.dumps({"ok": True, **result})
         except Exception as error:
+            diag.emit("error.captured", {"code": error_code(error), **diag.safe_error(error)})
             return json.dumps({"ok": False, "error": error_code(error)})

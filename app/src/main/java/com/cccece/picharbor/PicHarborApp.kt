@@ -13,11 +13,23 @@ class PicHarborApp:Application(), coil.ImageLoaderFactory, androidx.work.Configu
         private set
     override fun onCreate() {
         super.onCreate()
+        Diagnostics.start(this)
+        registerActivityLifecycleCallbacks(object:ActivityLifecycleCallbacks {
+            private var started=0
+            override fun onActivityStarted(activity:android.app.Activity){if(started++==0){Diagnostics.foreground=true;Diagnostics.event("app.lifecycle_changed",attrs=org.json.JSONObject().put("foreground",true))}}
+            override fun onActivityStopped(activity:android.app.Activity){if(--started<=0){started=0;Diagnostics.foreground=false;Diagnostics.event("app.lifecycle_changed",attrs=org.json.JSONObject().put("foreground",false))}}
+            override fun onActivityCreated(activity:android.app.Activity,state:android.os.Bundle?){}
+            override fun onActivityResumed(activity:android.app.Activity){}
+            override fun onActivityPaused(activity:android.app.Activity){}
+            override fun onActivitySaveInstanceState(activity:android.app.Activity,state:android.os.Bundle){}
+            override fun onActivityDestroyed(activity:android.app.Activity){}
+        })
         var engineReady=true
         try {
             Python.start(AndroidPlatform(this))
-            Python.getInstance().getModule("picharbor_engine").callAttr("initialize",File(filesDir,"runtime").absolutePath)
-        } catch (_:Exception){engineReady=false}
+            Python.getInstance().getModule("picharbor_engine").callAttr("initialize",File(filesDir,"runtime").absolutePath,DiagnosticBridge())
+        } catch (error:Exception){engineReady=false;Diagnostics.event("error.captured",attrs=DiagnosticFields.error(error),level="ERROR")}
+        Diagnostics.event("engine.initialized",attrs=org.json.JSONObject().put("engine_ready",engineReady))
         graph=AppGraph(this,engineReady)
         graph.scope.launch {
             try {

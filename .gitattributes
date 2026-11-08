@@ -1,3 +1,5 @@
 # Ensure frozen python engine files retain exact CRLF byte endings across git checkouts on all platforms
 app/src/main/python/gpmc/** text eol=crlf
 app/src/main/python/blackboxprotobuf/** text eol=crlf
+app/src/main/python/picharbor_engine.py text eol=lf
+app/src/main/python/harbor_diagnostics.py text eol=lf

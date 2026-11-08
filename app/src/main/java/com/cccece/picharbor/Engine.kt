@@ -11,8 +11,24 @@ import java.util.concurrent.atomic.AtomicLong
 class EngineFailure(val code:String,val metrics:JSONObject?=null):Exception(code)
 @Keep
 class EngineCallback(private val cancelled:()->Boolean={false},private val readGate:java.util.concurrent.Semaphore?=null,private val event:(JSONObject)->Unit={}) {
-    @Keep fun isCancelled()=cancelled()
-    @Keep fun onEvent(value:String){event(JSONObject(value))}
+    private var diagnostic:DiagnosticContext?=null
+    private var lastPhase=""
+    private val cancellationSeen=java.util.concurrent.atomic.AtomicBoolean(false)
+    fun attach(context:DiagnosticContext){diagnostic=context}
+    @Keep fun isCancelled():Boolean {
+        val result=cancelled()
+        if(result&&cancellationSeen.compareAndSet(false,true))diagnostic?.let{Diagnostics.event("cancel.observed",it)}
+        return result
+    }
+    @Keep fun onEvent(value:String){
+        val parsed=JSONObject(value)
+        val context=diagnostic
+        val phase=parsed.optString("phase")
+        if(context!=null&&phase!=lastPhase){lastPhase=phase;Diagnostics.event("item.phase_changed",context,JSONObject().put("phase",phase))}
+        val span=if(phase=="uploaded")context?.child() else null
+        if(span!=null)Diagnostics.event("operation.started",span,JSONObject().put("operation","persist_uploaded_callback"))
+        try {event(parsed)} finally {if(span!=null)Diagnostics.event("operation.finished",span,JSONObject().put("operation","persist_uploaded_callback"))}
+    }
     @Keep fun acquireRead():Boolean {
         val gate=readGate?:return !cancelled()
         while(!cancelled())if(gate.tryAcquire(250,java.util.concurrent.TimeUnit.MILLISECONDS))return true
@@ -24,12 +40,25 @@ class Engine(private val context:Context) {
     private val source=SourceBridge(context)
     suspend fun call(action:String, value:JSONObject=JSONObject(), callback:EngineCallback?=null):JSONObject=withContext(Dispatchers.IO) {
         if(action !in setOf("connect","logout")&&!value.has("_account"))value.put("_account",Preferences(context).get().account)
-        val result=try {
-            JSONObject(Python.getInstance().getModule("picharbor_engine").callAttr("dispatch",action,value.toString(),source,callback).toString())
-        } catch (_:Exception){throw EngineFailure("ENGINE_ERROR")}
-        if(!result.optBoolean("ok"))throw EngineFailure(result.optString("error","ENGINE_ERROR"),result.optJSONObject("_metrics"))
-        result
+        val diagnostic=value.optJSONObject("_diagnostics")?.let{DiagnosticContext.parse(it)}?:DiagnosticContext()
+        value.put("_diagnostics",diagnostic.json())
+        callback?.attach(diagnostic)
+        val started=android.os.SystemClock.elapsedRealtime()
+        Diagnostics.event("engine.call_started",diagnostic,JSONObject().put("action",action))
+        var outcome="error"
+        try {
+            val result=try {
+                JSONObject(Python.getInstance().getModule("picharbor_engine").callAttr("dispatch",action,value.toString(),source,callback).toString())
+            } catch (error:Exception){Diagnostics.event("error.captured",diagnostic,DiagnosticFields.error(error),"ERROR");throw EngineFailure("ENGINE_ERROR")}
+            if(!result.optBoolean("ok"))throw EngineFailure(result.optString("error","ENGINE_ERROR"),result.optJSONObject("_metrics"))
+            outcome="success"
+            Diagnostics.event("engine.result",diagnostic,JSONObject().put("state",result.optString("state")).put("code",result.optString("error")))
+            result
+        } finally {
+            Diagnostics.event("engine.call_finished",diagnostic,JSONObject().put("action",action).put("outcome",outcome).put("duration_ms",android.os.SystemClock.elapsedRealtime()-started))
+        }
     }
+
     suspend fun connect(credential:String,timeout:Int)=call("connect",JSONObject().put("credential",credential).put("timeout",timeout))
 }
 

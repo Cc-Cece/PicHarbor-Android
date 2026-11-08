@@ -116,6 +116,11 @@ jobs:
       - name: Run unit tests
         run: ./gradlew testReleaseUnitTest --console=plain
 
+      - name: Check diagnostic transport isolation
+        run: |
+          python -m pip install requests==2.32.5
+          python tools/test_diagnostics.py
+
       - name: Build release APK (arm64-v8a)
         run: |
           BUILD_PYTHON=$(which python3)
@@ -123,6 +128,18 @@ jobs:
 
       - name: Inspect release APK integrity
         run: python tools/inspect_release.py
+
+      - name: Archive exact-build symbol mapping
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-symbols-${{ github.sha }}
+          path: |
+            app/build/outputs/mapping/release/mapping.txt
+            app/src/main/assets/engine-baseline.json
+            app/src/main/assets/engine-extension.json
+            app/build.gradle.kts
+          retention-days: 90
+          if-no-files-found: error
 
       - name: Package release artifacts
         run: python tools/package-release.py
@@ -189,6 +206,9 @@ jobs:
           } > ../notes.md
 
           cd ..
+          if [[ "$TAG" == "v1.0.9-beta.5" ]]; then
+            cat docs/releases/1.0.9-beta.5.md >> notes.md
+          fi
           cat notes.md
 
       - name: Publish GitHub Release

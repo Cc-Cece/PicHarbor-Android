@@ -41,6 +41,7 @@ class Scheduler(private val graph:AppGraph) {
             .setInputData(workDataOf("automatic" to true)).setConstraints(constraints(settings,true)).build())
     }
     suspend fun launchManual(allowMobile:Boolean=false) {
+        Diagnostics.event("scheduler.submitted",attrs=org.json.JSONObject().put("scheduler",if(Build.VERSION.SDK_INT>=34)"uidt" else "work_manager"))
         // Every durable submission gets a wake-up, including while the previous runner exits.
         val id=700000+sequence.incrementAndGet()%90000
         if(Build.VERSION.SDK_INT>=34) {
@@ -51,12 +52,14 @@ class Scheduler(private val graph:AppGraph) {
             val info=JobInfo.Builder(id,ComponentName(graph.app,TransferJob::class.java)).setUserInitiated(true).setRequiredNetwork(request)
                 .setEstimatedNetworkBytes(0,graph.dao.media().sumOf{it.size}.coerceAtLeast(1)).build()
             if(runCatching { graph.app.getSystemService(JobScheduler::class.java).schedule(info)==JobScheduler.RESULT_SUCCESS }.getOrDefault(false)) {
+                Diagnostics.event("scheduler.accepted",attrs=org.json.JSONObject().put("scheduler","uidt").put("accepted",true))
                 // Independent watchdog only if Android never starts the accepted UIDT job.
                 work.enqueueUniqueWork("watchdog-$id",ExistingWorkPolicy.KEEP,OneTimeWorkRequestBuilder<BackupWorker>()
                     .addTag("transfer").setInitialDelay(8,TimeUnit.SECONDS).setConstraints(constraints(graph.preferences.get(),false,allowMobile)).build())
                 return
             }
         }
+        Diagnostics.event("scheduler.accepted",attrs=org.json.JSONObject().put("scheduler","work_manager").put("accepted",true))
         work.enqueueUniqueWork("manual-${UUID.randomUUID()}",ExistingWorkPolicy.KEEP,OneTimeWorkRequestBuilder<BackupWorker>()
             .addTag("transfer").setInputData(workDataOf("automatic" to false)).setConstraints(constraints(graph.preferences.get(),false,allowMobile)).build())
     }
@@ -106,6 +109,7 @@ object TransferNotifications {
 class BackupWorker(context:Context,parameters:WorkerParameters):CoroutineWorker(context,parameters) {
     override suspend fun getForegroundInfo()=TransferNotifications.foreground(applicationContext)
     override suspend fun doWork():Result {
+        Diagnostics.event("scheduler.started",attrs=org.json.JSONObject().put("scheduler","work_manager").put("worker_attempt",runAttemptCount))
         val graph=(applicationContext as PicHarborApp).graph
         val automatic=inputData.getBoolean("automatic",false)
         var dailyFinished=true
@@ -118,7 +122,7 @@ class BackupWorker(context:Context,parameters:WorkerParameters):CoroutineWorker(
                 runCatching { applicationContext.getSystemService(NotificationManager::class.java).notify(TransferNotifications.ID,TransferNotifications.create(applicationContext,text,percent)) }
             }
             return if(success)Result.success() else if(runAttemptCount<3){dailyFinished=false;Result.retry()} else Result.failure()
-        } catch (_:Exception){return if(runAttemptCount<3){dailyFinished=false;Result.retry()} else Result.failure()}
+        } catch (error:Exception){Diagnostics.event("error.captured",attrs=DiagnosticFields.error(error),level="ERROR");return if(runAttemptCount<3){dailyFinished=false;Result.retry()} else Result.failure()}
         finally { if(dailyFinished&&inputData.getBoolean("daily",false))withContext(NonCancellable){graph.scheduler.configure()} }
     }
 }
@@ -128,6 +132,7 @@ class TransferJob:JobService() {
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     private val tokens=java.util.concurrent.ConcurrentHashMap<Int,AtomicBoolean>()
     override fun onStartJob(params:JobParameters):Boolean {
+        Diagnostics.event("scheduler.started",attrs=org.json.JSONObject().put("scheduler","uidt"))
         val token=AtomicBoolean(false);tokens[params.jobId]=token
         WorkManager.getInstance(this).cancelUniqueWork("watchdog-${params.jobId}")
         if(Build.VERSION.SDK_INT>=34)setNotification(params,params.jobId,TransferNotifications.create(this,"准备备份"),JOB_END_NOTIFICATION_POLICY_REMOVE)
@@ -141,7 +146,7 @@ class TransferJob:JobService() {
         }
         return true
     }
-    override fun onStopJob(params:JobParameters):Boolean {tokens.remove(params.jobId)?.set(true);return true}
+    override fun onStopJob(params:JobParameters):Boolean {Diagnostics.event("scheduler.stopped",attrs=org.json.JSONObject().put("scheduler","uidt").put("stop_reason",if(Build.VERSION.SDK_INT>=31)params.stopReason else -1));tokens.remove(params.jobId)?.set(true);return true}
     override fun onDestroy(){tokens.values.forEach{it.set(true)};scope.cancel();super.onDestroy()}
 }
 class PauseReceiver:BroadcastReceiver() {

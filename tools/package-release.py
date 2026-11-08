@@ -3,6 +3,7 @@ import hashlib
 import json
 import shutil
 import os
+import re
 import zipfile
 from pathlib import Path
 
@@ -11,12 +12,12 @@ out = root / 'dist'
 out.mkdir(exist_ok=True)
 metadata = json.loads((root / 'app/build/outputs/apk/release/output-metadata.json').read_text(encoding='utf-8'))
 version = metadata['elements'][0]['versionName']
-assert version and all(c.isdigit() or c == '.' for c in version), 'Unexpected release version'
+assert re.fullmatch(r'\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?', version), 'Unexpected release version'
 apk = out / f'PicHarbor-{version}-arm64.apk'
 shutil.copy2(root / 'app/build/outputs/apk/release/app-release.apk', apk)
 archive = out / f'PicHarbor-{version}-source.zip'
-allowed = {'app', 'gradle', 'tools'}
-top = {'build.gradle.kts', 'settings.gradle.kts', 'gradle.properties', 'gradlew', 'gradlew.bat', '.gitignore', 'README.md', 'NOTICE.md', 'LICENSE'}
+allowed = {'app', 'gradle', 'tools', 'docs', '.github'}
+top = {'build.gradle.kts', 'settings.gradle.kts', 'gradle.properties', 'gradlew', 'gradlew.bat', '.gitignore', '.gitattributes', 'README.md', 'README_ZH.md', 'NOTICE.md', 'LICENSE'}
 excluded = {'node_modules', 'build', '.gradle', '.kotlin', '.git', '.venv', '__pycache__', 'test-results'}
 
 

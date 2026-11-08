@@ -30,7 +30,7 @@ class CleanupRepository(private val graph:AppGraph) {
         },scan.id,scan.state,scan.account,scan.mode,scan.metrics,scan.elapsedMs,scan.effectiveParallel,scan.policy)
     }.stateIn(graph.scope,SharingStarted.Eagerly,CleanupProgress())
 
-    fun cancel(){cancelled.set(true);graph.scope.launch{stopAndWait()}}
+    fun cancel(){Diagnostics.event("cancel.requested",attrs=JSONObject().put("kind","cleanup"));cancelled.set(true);graph.scope.launch{stopAndWait()}}
     suspend fun changePolicy(change:PendingCleanupPolicy,acknowledgement:String="")=enqueueLock.withLock {
         val current=graph.preferences.get()
         if(graph.switching.value||current.account!=change.account||current.cleanupPolicy!=change.previous)throw EngineFailure("ACCOUNT_CHANGED")
@@ -93,6 +93,8 @@ class CleanupRepository(private val graph:AppGraph) {
     suspend fun verify(ids:List<String>?=null) {runScan(enqueue(ids,false).id)}
     suspend fun runScan(id:String,externalCancelled:()->Boolean={false}):Boolean=lock.withLock {
         var scan=graph.dao.cleanupScan(id)?:return@withLock true
+        val diagnostic=DiagnosticContext(job=id)
+        Diagnostics.event("cleanup.started",diagnostic)
         if(scan.state !in activeStates)return@withLock true
         if(scan.state=="cancelling"){graph.dao.putCleanupScan(scan.copy(state="cancelled"));return@withLock true}
         if(scan.account!=graph.preferences.get().account||graph.switching.value){graph.dao.putCleanupScan(scan.copy(state="cancelled",error="ACCOUNT_CHANGED"));return@withLock true}
@@ -124,7 +126,7 @@ class CleanupRepository(private val graph:AppGraph) {
             stateLock.withLock {scan=snapshot().copy(state="syncing");graph.dao.putCleanupScan(scan)}
             CleanupNotifications.progress(graph.app,scan)
             try {
-                val result=graph.engine.call("synchronize",JSONObject().put("_account",scan.account).put("full",true),callback=EngineCallback(::stopped))
+                val result=graph.engine.call("synchronize",JSONObject().put("_diagnostics",diagnostic.child().json()).put("_account",scan.account).put("full",true),callback=EngineCallback(::stopped))
                 checkpoint(result.optJSONObject("_metrics"))
             } catch(error:EngineFailure){checkpoint(error.metrics);throw error}
         }
@@ -134,6 +136,7 @@ class CleanupRepository(private val graph:AppGraph) {
             val records=graph.dao.backups(account).associateBy{it.mediaId}
             if(scan.mode=="full"&&verification.cloudState)syncCloud() else checkpoint()
             suspend fun persist(task:CleanupScanItem,result:CleanupRecord) = stateLock.withLock {
+                Diagnostics.event("cleanup.evidence_checked",diagnostic,JSONObject().put("state",result.state).put("reason",result.reason))
                 val saveStart=android.os.SystemClock.elapsedRealtime()
                 graph.database.withTransaction {
                     graph.dao.putCleanup(result)
@@ -164,7 +167,7 @@ class CleanupRepository(private val graph:AppGraph) {
                     try {
                         if(graph.preferences.get().account!=account)throw EngineFailure("ACCOUNT_CHANGED")
                         val before=graph.media.current(media)?:throw EngineFailure("FILE_ACCESS")
-                        val value=JSONObject().put("_account",account).put("uri",media.id).put("name",media.name).put("check_mode",scan.mode)
+                        val value=JSONObject().put("_diagnostics",diagnostic.child().copy(item=java.util.UUID.randomUUID().toString(),attempt=java.util.UUID.randomUUID().toString()).json()).put("_account",account).put("uri",media.id).put("name",media.name).put("check_mode",scan.mode)
                             .put("check_cloud_state",verification.cloudState).put("check_original_access",verification.originalAccess)
                         if(known!=null)value.put("sha256",known.sha256)
                         val verified=graph.engine.call("verify_cleanup",value,EngineCallback(::stopped,readGate=readers))
@@ -241,6 +244,7 @@ class CleanupRepository(private val graph:AppGraph) {
         return checked
     }
     suspend fun systemRequest(records:List<CleanupRecord>):IntentSender? {
+        Diagnostics.event("cleanup.consent_requested",attrs=JSONObject().put("item_count",records.size))
         if(Build.VERSION.SDK_INT<30)return null
         val settings=graph.preferences.get()
         require(records.all{BackupPolicy.cleanupFresh(it,settings.account,System.currentTimeMillis(),settings.cleanupPolicy.id)})
@@ -250,6 +254,7 @@ class CleanupRepository(private val graph:AppGraph) {
         return if(uris.isEmpty())null else MediaStore.createDeleteRequest(graph.app.contentResolver,uris).intentSender
     }
     suspend fun finishDelete(records:List<CleanupRecord>,systemApproved:Boolean):Pair<Int,Long> {
+        Diagnostics.event("cleanup.consent_result",attrs=JSONObject().put("approved",systemApproved).put("item_count",records.size))
         val account=graph.preferences.get().account
         var deleted=0;var bytes=0L
         for(record in records) {

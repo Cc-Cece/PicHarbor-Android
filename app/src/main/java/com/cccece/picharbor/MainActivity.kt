@@ -14,6 +14,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.*
 import androidx.activity.viewModels
 import androidx.lifecycle.lifecycleScope
 import androidx.documentfile.provider.DocumentFile
@@ -21,6 +22,7 @@ import kotlinx.coroutines.*
 
 class MainActivity:ComponentActivity() {
     private val model:HarborViewModel by viewModels()
+    private var reportRange=LogRange()
     private var deleteKind=""
     private var cleanupIds=listOf<String>()
     private var localIds=listOf<String>()
@@ -32,11 +34,17 @@ class MainActivity:ComponentActivity() {
     }
     private val picker=registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()){uris->if(uris.isNotEmpty())model.afterAction{model.importFiles(uris)}}
     private val tree=registerForActivityResult(ActivityResultContracts.OpenDocumentTree()){uri->if(uri!=null)model.afterAction{model.addTree(uri)}}
-    private val report=registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")){uri ->
+    private val report=registerForActivityResult(ActivityResultContracts.CreateDocument("application/zip")){uri ->
         if(uri!=null)lifecycleScope.launch {
-            val text=model.report()
-            val success=withContext(Dispatchers.IO){runCatching {contentResolver.openOutputStream(uri,"wt")!!.use{it.write(text.toByteArray(Charsets.UTF_8))}}.isSuccess}
-            model.say(if(success)"诊断报告已导出" else "未能导出，请重试")
+            model.say("???????")
+            val message=withContext(Dispatchers.IO){
+                runCatching {contentResolver.openOutputStream(uri,"wt")!!.use{Diagnostics.export(it,reportRange)}}.getOrElse { error ->
+                    runCatching { android.provider.DocumentsContract.deleteDocument(contentResolver,uri) }
+                    Diagnostics.event("bundle.export_failed",attrs=DiagnosticFields.error(error),level="WARN")
+                    if(error.message=="NO_LOGS_IN_RANGE")"????????" else if(error.message=="EXPORT_BUSY")"????????????" else "??????????"
+                }
+            }
+            model.say(message)
         }
     }
     private val deletion=registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()){result ->
@@ -58,6 +66,7 @@ class MainActivity:ComponentActivity() {
     override fun onCreate(savedInstanceState:Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        if(savedInstanceState!=null)reportRange=LogRange(savedInstanceState.getLong("log_start",Long.MIN_VALUE),savedInstanceState.getLong("log_end",Long.MAX_VALUE),savedInstanceState.getString("log_zone")?:java.time.ZoneId.systemDefault().id)
         if(intent.getBooleanExtra("open_history",false))model.navigate("history")
         if(intent.getBooleanExtra("open_cleanup",false))model.afterAction{model.openCleanup(intent.getStringExtra("cleanup_scan").orEmpty())}
         deleteKind=savedInstanceState?.getString("delete_kind").orEmpty()
@@ -68,9 +77,14 @@ class MainActivity:ComponentActivity() {
             model.graph.preferences.integer("bootSession",bootCount(this@MainActivity));model.graph.scheduler.configure();model.graph.scheduler.restorePending()
         }
         setContent {
+            var logDialog by remember { mutableStateOf(false) }
+            if(logDialog)DiagnosticExportDialog(onDismiss={logDialog=false},onExport={range->
+                reportRange=range;logDialog=false
+                report.launch("PicHarbor-logs-${java.time.LocalDate.now()}.zip")
+            })
             HarborRoot(model,onLogin={login.launch(Intent(this,LoginActivity::class.java))},onPermissions=::requestPermissions,
                 onPickFiles={picker.launch(arrayOf("image/*","video/*"))},onPickTree={tree.launch(null)},
-                onCleanup=::requestCleanup,onLocalDelete=::requestLocalDelete,onExport={report.launch("PicHarbor-diagnostics.json")})
+                onCleanup=::requestCleanup,onLocalDelete=::requestLocalDelete,onExport={logDialog=true})
         }
     }
     private fun requestPermissions() {
@@ -144,6 +158,7 @@ class MainActivity:ComponentActivity() {
     override fun onSaveInstanceState(outState:Bundle) {
         outState.putString("delete_kind",deleteKind);outState.putStringArrayList("cleanup_ids",ArrayList(cleanupIds))
         outState.putStringArrayList("local_ids",ArrayList(localIds));outState.putInt("legacy_index",legacyIndex)
+        outState.putLong("log_start",reportRange.start);outState.putLong("log_end",reportRange.end);outState.putString("log_zone",reportRange.zone)
         super.onSaveInstanceState(outState)
     }
 }

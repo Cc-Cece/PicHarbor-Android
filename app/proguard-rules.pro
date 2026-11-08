@@ -5,3 +5,5 @@
 
 -keep class com.cccece.picharbor.SourceHandle { *; }
 
+
+-keep class com.cccece.picharbor.DiagnosticBridge { *; }

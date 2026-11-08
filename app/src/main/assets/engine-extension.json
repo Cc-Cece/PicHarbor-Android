@@ -1,14 +1,18 @@
 {
-  "version": "1.0.7",
+  "version": "1.0.9-beta.5",
   "note": "Only new mobile extensions; all 31 original files remain unchanged.",
   "files": [
     {
       "path": "gpmc/mobile.py",
-      "sha256": "7ef15b20172096ef3269fec27f4ad66aba372ab1a0ea7499cc14b018c00a6105"
+      "sha256": "637be5a531ee6529e2a10afdc7a5082143ffeec0efaa848d3e1e189d494e301a"
     },
     {
       "path": "picharbor_engine.py",
-      "sha256": "4394fbe0ac0a555223c7085b31f531dc65fabe6b7db544b072ba93c1d510a8f2"
+      "sha256": "e450ff98a97633d1be7506c7453aea9856e8b05bef41c54f8ff21c6dc49cab4b"
+    },
+    {
+      "path": "harbor_diagnostics.py",
+      "sha256": "cde866cb78e9428dd189d25bf7943a11533b182dbfa4b524a670fa429e2679f8"
     }
   ]
 }
