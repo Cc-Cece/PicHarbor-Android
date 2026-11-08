@@ -16,11 +16,11 @@ def executable(name):
     return str(candidate) if candidate and candidate.is_file() else shutil.which(name) or name
 
 
-def run(arguments):
+def run(arguments, include_stderr=False):
     result = subprocess.run(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode:
         raise RuntimeError("Signing verification command failed; check key/password configuration or APK validity.")
-    return result.stdout
+    return result.stdout + (result.stderr if include_stderr else b"")
 
 
 def verify_keystore(path):
@@ -39,11 +39,16 @@ def verify_apk(path):
     if not jars:
         raise RuntimeError("Android SDK apksigner.jar is missing")
     jar = max(jars, key=lambda p: tuple(int(n) for n in re.findall(r"\d+", p.parts[-3])))
-    output = run([executable("java"), "-jar", str(jar), "verify", "--print-certs", str(path)]).decode("utf-8", "replace")
-    signers = re.findall(r"Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F]+)", output)
-    if len(signers) != 1:
-        raise RuntimeError("Expected exactly one APK signer")
-    return signers[0].lower()
+    output = run([executable("java"), "-Duser.language=en", "-Duser.country=US", "-jar", str(jar),
+                  "verify", "--print-certs", str(path)], include_stderr=True).decode("utf-8", "replace")
+    # SDK releases may label signers by number or by SDK range, and can use stderr.
+    # This is public APK certificate output only; keystore DER handling stays separate.
+    signers = {value.replace(":", "").lower() for value in
+               re.findall(r"certificate SHA-256 digest:\s*([0-9a-fA-F:]+)", output, re.IGNORECASE)}
+    signer_ids = set(re.findall(r"Signer #(\d+)", output, re.IGNORECASE))
+    if len(signers) != 1 or len(signer_ids) > 1 or not re.fullmatch(r"[0-9a-f]{64}", next(iter(signers), "")):
+        raise RuntimeError("Could not identify exactly one APK certificate; public verifier output: " + output[:3000])
+    return signers.pop()
 
 
 def main():
