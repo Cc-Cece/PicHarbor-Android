@@ -83,35 +83,23 @@ jobs:
           mkdir -p "$KEYSTORE_DIR"
           KEYSTORE_PATH="$KEYSTORE_DIR/picharbor-release.jks"
 
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "Using release signing keystore from repository secrets."
-            echo "$KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_PATH"
-            STORE_PASS="$STORE_PASSWORD"
-            KEY_PASS="${KEY_PASSWORD:-$STORE_PASSWORD}"
-          else
-            echo "::warning::No PICHARBOR_KEYSTORE_BASE64 secret found. Generating temporary signing key for CI release."
-            TEMP_PASS="picharbor-temp-ci-signing-key"
-            STORE_PASS="$TEMP_PASS"
-            KEY_PASS="$TEMP_PASS"
-            keytool -genkeypair \
-              -keystore "$KEYSTORE_PATH" \
-              -storetype JKS \
-              -alias picharbor \
-              -keyalg RSA \
-              -keysize 3072 \
-              -sigalg SHA256withRSA \
-              -validity 10000 \
-              -dname "CN=cc_cece,O=PicHarbor" \
-              -storepass "$TEMP_PASS" \
-              -keypass "$TEMP_PASS" \
-              -noprompt
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "::error::Persistent release signing secrets are required. Temporary signing keys are forbidden."
+            exit 1
           fi
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_PATH"
+          STORE_PASS="$STORE_PASSWORD"
+          KEY_PASS="$KEY_PASSWORD"
 
           echo "PICHARBOR_KEYSTORE=$KEYSTORE_PATH" >> "$GITHUB_ENV"
           echo "::add-mask::$STORE_PASS"
           echo "PICHARBOR_STORE_PASSWORD=$STORE_PASS" >> "$GITHUB_ENV"
           echo "::add-mask::$KEY_PASS"
           echo "PICHARBOR_KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
+
+      - name: Verify pinned keystore certificate
+        run: python tools/verify_signing.py --keystore "$PICHARBOR_KEYSTORE"
 
       - name: Prepare verified Gradle distribution
         env:
@@ -143,6 +131,9 @@ jobs:
         run: |
           BUILD_PYTHON=$(which python3)
           gradle assembleRelease "-PbuildPython=$BUILD_PYTHON" --console=plain
+
+      - name: Verify signed APK release identity
+        run: python tools/verify_signing.py --apk app/build/outputs/apk/release/app-release.apk
 
       - name: Inspect release APK integrity
         run: python tools/inspect_release.py
