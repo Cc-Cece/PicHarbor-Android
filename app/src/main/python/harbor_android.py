@@ -18,41 +18,13 @@ from urllib.parse import urlparse
 
 import requests
 import harbor_diagnostics as diag
-from .api import Api
-from .client import Client
-from .db_update_parser import parse_db_update
-from .utils import parse_email
+from gpmc.api import Api
+from gpmc.client import Client
+from gpmc.db_update_parser import parse_db_update
+from gpmc.utils import parse_email
 
 
-class Cancelled(Exception):
-    pass
-
-
-def known_integer(value):
-    return value if isinstance(value,int) and not isinstance(value,bool) and value >= 0 else None
-
-
-def error_code(error):
-    value = str(error)
-    for marker, code in (
-        ("encrypted auth token", "ENCRYPTED_TOKEN"), ("TokenEncrypted", "ENCRYPTED_TOKEN"),
-        ("MissingDroidguard", "DEVICE_VERIFICATION"), ("device verification", "DEVICE_VERIFICATION"),
-        ("NeedsBrowser", "LOGIN_REQUIRED"), ("browser sign-in", "LOGIN_REQUIRED"),
-        ("fresh browser sign-in", "LOGIN_REQUIRED"), ("BadAuthentication", "LOGIN_REQUIRED"),
-        ("rejected the credential", "LOGIN_REQUIRED"),
-    ):
-        if marker in value:
-            return code
-    if isinstance(error, Cancelled):
-        return "CANCELLED"
-    if isinstance(error, requests.exceptions.HTTPError):
-        status = error.response.status_code if error.response is not None else 0
-        return "LOGIN_REQUIRED" if status in (401, 403) else ("RATE_LIMITED" if status == 429 else "NETWORK_ERROR")
-    if isinstance(error, requests.exceptions.RequestException):
-        return "NETWORK_ERROR"
-    if isinstance(error, (OSError, PermissionError)) or "SecurityException" in type(error).__name__:
-        return "FILE_ACCESS"
-    return "ENGINE_ERROR"
+from gpmc.errors import OperationCancelled as Cancelled, classify as error_code, known_integer
 
 
 class MobileApi(Api):
@@ -70,6 +42,7 @@ class MobileApi(Api):
         # Retry is controlled per item below, rather than multiplying urllib3 retries.
         session = requests.Session()
         session.verify = True
+        session.trust_env = False
         if self.proxy:
             session.proxies.update({"https": self.proxy, "http": self.proxy})
         return session
@@ -315,7 +288,7 @@ class MobileService:
             for raw in raw_items:
                 if not isinstance(raw, dict): continue
                 try:
-                    from .db_update_parser import _parse_media_item, _get_nested
+                    from gpmc.db_update_parser import _parse_media_item, _get_nested
                     item = _parse_media_item(raw)
                     details = raw.get("2", {})
                     trash_section = details.get("16")
@@ -406,40 +379,13 @@ class MobileService:
 
     @staticmethod
     def allowed_url(url):
-        parsed = urlparse(url)
-        return parsed.scheme == "https" and parsed.username is None and parsed.password is None and any(
-            parsed.hostname == suffix or (parsed.hostname or "").endswith("." + suffix)
-            for suffix in ("google.com", "googleusercontent.com", "googlevideo.com"))
+        from gpmc.media_access import allowed_url
+        return allowed_url(url)
 
     def original_access(self, key, expected_size, callback=None):
-        self.check(callback)
-        with self.measured("original_url"):
-            response = self.client.api.get_download_urls(key)
-        try: url = response["1"]["5"]["2"]["6"]
-        except (KeyError, TypeError): return False
-        if isinstance(url, bytes): url = url.decode("utf-8")
-        if not isinstance(url, str) or not self.allowed_url(url): return False
-        with requests.Session() as session:
-            for method in ("HEAD", "GET"):
-                current = url
-                for _ in range(6):
-                    self.check(callback)
-                    if not self.allowed_url(current): return False
-                    with self.measured("original_head" if method == "HEAD" else "original_range"), session.request(method, current, headers={"Accept-Encoding": "identity", **({"Range": "bytes=0-0"} if method == "GET" else {})},
-                        allow_redirects=False, stream=True, timeout=(15, 30)) as check:
-                        if check.status_code in (301,302,303,307,308):
-                            from urllib.parse import urljoin
-                            current = urljoin(current, check.headers.get("Location", "")); continue
-                        if check.status_code == 429 or check.status_code >= 500:
-                            check.raise_for_status()
-                        if method == "HEAD" and (check.status_code in (400,403,405,501) or (check.status_code == 200 and not check.headers.get("Content-Length", "").isdigit())): break
-                        if check.status_code not in (200,206): return False
-                        length = check.headers.get("Content-Length", "")
-                        if check.status_code == 206:
-                            match = re.fullmatch(r"bytes 0-0/(\d+)", check.headers.get("Content-Range", ""))
-                            length = match.group(1) if match else ""
-                        return length.isdigit() and int(length) == expected_size
-            return False
+        from gpmc.media_access import original_access
+        return original_access(self.client.api, key, expected_size,
+                               checkpoint=lambda: self.check(callback), measured=self.measured)
 
     def verify_cleanup(self, item, bridge, callback):
         digest = self.check_digest(item, bridge, callback)

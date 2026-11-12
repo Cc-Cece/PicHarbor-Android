@@ -1,5 +1,5 @@
 """Import on Application main thread; background calls use this single service."""
-from gpmc.mobile import MobileService
+from harbor_android import MobileService
 
 service = None
 

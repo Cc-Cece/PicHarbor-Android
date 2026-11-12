@@ -3,11 +3,17 @@ import hashlib
 import io
 import json
 import zipfile
+import argparse
 from pathlib import Path
 
+from sync_gpmc import check as check_gpmc
+
 root = Path(__file__).resolve().parents[1]
-apk = root / 'app/build/outputs/apk/release/app-release.apk'
+parser = argparse.ArgumentParser()
+parser.add_argument('--apk', type=Path, default=root / 'app/build/outputs/apk/release/app-release.apk')
+apk = parser.parse_args().apk
 baseline = json.loads((root / 'app/src/main/assets/engine-baseline.json').read_text(encoding='utf-8'))
+lock = check_gpmc(root)
 extension = json.loads((root / 'app/src/main/assets/engine-extension.json').read_text(encoding='utf-8'))
 with zipfile.ZipFile(apk) as archive:
     names = archive.namelist()
@@ -16,15 +22,18 @@ with zipfile.ZipFile(apk) as archive:
     assert 'assets/LICENSE.txt' in names and 'assets/NOTICE.txt' in names
     assert 'assets/diagnostic-event.schema.json' in names and 'assets/diagnostic-format.md' in names
     assert json.loads(archive.read('assets/diagnostic-event.schema.json'))['properties']['schema_version']['const'] == 1
+    assert json.loads(archive.read('assets/gpmc.lock.json')) == lock, 'Stale packaged gpmc lock'
     assert json.loads(archive.read('assets/engine-extension.json')) == extension, 'Stale packaged extension manifest'
     assert not any('diagnostic-auth' in name or name.startswith('assets/demo/') for name in names)
     with zipfile.ZipFile(io.BytesIO(archive.read('assets/chaquopy/app.imy'))) as python:
         contents = set(python.namelist())
-        for item in baseline['files'] + extension['files']:
+        frozen = [item for item in baseline['files'] if not item['path'].startswith('gpmc/')]
+        shared = [{'path': 'gpmc/' + name, 'sha256': value} for name, value in lock['files'].items()]
+        for item in frozen + extension['files'] + shared:
             name = item['path']; compiled = name.removesuffix('.py') + '.pyc'
             assert name in contents or compiled in contents, f'Missing {name}'
             if name in contents:
-                assert hashlib.sha256(python.read(name)).hexdigest() == item['sha256'], f'Changed {name}'
+                assert hashlib.sha256(python.read(name).replace(b'\r\n', b'\n') if name.startswith('gpmc/') else python.read(name)).hexdigest() == item['sha256'], f'Changed {name}'
         assert not any(name.startswith(('android_probe.', 'cloud_probe.', 'profile_probe.')) for name in contents)
         assert not any('diagnostic-auth' in name for name in contents)
-print('PASS: release arm64 runtime, complete frozen engine + extensions, licenses; no prototype entry or demo assets')
+print('PASS: release arm64 runtime, pinned canonical gpmc + protobuf dependency + platform adapters, licenses; no prototype entry or demo assets')

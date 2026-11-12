@@ -17,7 +17,7 @@ apk = out / f'PicHarbor-{version}-arm64.apk'
 shutil.copy2(root / 'app/build/outputs/apk/release/app-release.apk', apk)
 archive = out / f'PicHarbor-{version}-source.zip'
 allowed = {'app', 'gradle', 'tools', 'docs', '.github'}
-top = {'build.gradle.kts', 'settings.gradle.kts', 'gradle.properties', 'gradlew', 'gradlew.bat', '.gitignore', '.gitattributes', 'README.md', 'README_ZH.md', 'NOTICE.md', 'LICENSE'}
+top = {'build.gradle.kts', 'settings.gradle.kts', 'gradle.properties', 'gradlew', 'gradlew.bat', '.gitignore', '.gitattributes', 'README.md', 'README_ZH.md', 'NOTICE.md', 'LICENSE', 'gpmc.lock.json'}
 excluded = {'node_modules', 'build', '.gradle', '.kotlin', '.git', '.venv', '__pycache__', 'test-results'}
 
 

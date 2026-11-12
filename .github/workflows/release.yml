@@ -10,9 +10,14 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v1.0.8, defaults to current ref if omitted)'
+        description: 'Tag matching the app version (defaults to v + versionName)'
         required: false
         type: string
+      publish:
+        description: 'Publish a new immutable Release (otherwise upload build artifacts only)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write # required to create the GitHub Release and upload assets
@@ -23,7 +28,7 @@ concurrency:
 
 jobs:
   release:
-    name: Build release APK + publish release (arm64-v8a)
+    name: Build signed APK and optionally publish (arm64-v8a)
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -33,45 +38,22 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
+      - uses: ./.github/actions/setup-build
 
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-
-      - name: Make Gradle wrapper executable
-        run: chmod +x gradlew
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Accept Android SDK licenses
+      - name: Check release intent and immutable version
+        id: preflight
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+          PUBLISH_ENABLED: ${{ github.event_name == 'push' || inputs.publish }}
         run: |
-          yes | sdkmanager --licenses 2>/dev/null || true
-
-      - name: Restore baseline line endings for frozen engine files
-        run: |
-          python -c "
-          import json, hashlib
-          from pathlib import Path
-          baseline = json.loads(Path('app/src/main/assets/engine-baseline.json').read_text(encoding='utf-8'))
-          extension = json.loads(Path('app/src/main/assets/engine-extension.json').read_text(encoding='utf-8'))
-          for item in baseline.get('files', []) + extension.get('files', []):
-              p = Path('app/src/main/python') / item['path']
-              if p.is_file():
-                  raw = p.read_bytes()
-                  crlf = raw.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
-                  if hashlib.sha256(crlf).hexdigest() == item['sha256']:
-                      p.write_bytes(crlf)
-          "
-
-      - name: Verify Python engine baseline
-        run: python tools/verify_engine.py
+          set -euo pipefail
+          TAG="$REQUESTED_TAG"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then TAG="$GITHUB_REF_NAME"; fi
+          FLAGS=()
+          if [ "$PUBLISH_ENABLED" = true ]; then FLAGS+=(--publish); fi
+          python tools/release_preflight.py --tag "$TAG" "${FLAGS[@]}"
+          python tools/verify_engine.py
 
       - name: Configure release signing key
         env:
@@ -101,26 +83,8 @@ jobs:
       - name: Verify pinned keystore certificate
         run: python tools/verify_signing.py --keystore "$PICHARBOR_KEYSTORE"
 
-      - name: Prepare verified Gradle distribution
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Same official 8.13 asset as the wrapper, without the failing web-download redirect.
-          GRADLE_ZIP="$RUNNER_TEMP/gradle-8.13-bin.zip"
-          for attempt in 1 2 3; do
-            if gh api -H 'Accept: application/octet-stream' \
-              repos/gradle/gradle-distributions/releases/assets/232373824 > "$GRADLE_ZIP"; then
-              break
-            fi
-            if [ "$attempt" = 3 ]; then exit 1; fi
-            sleep 5
-          done
-          echo "20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78  $GRADLE_ZIP" | sha256sum -c -
-          unzip -q "$GRADLE_ZIP" -d "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/gradle-8.13/bin" >> "$GITHUB_PATH"
-
       - name: Run unit tests
-        run: gradle testReleaseUnitTest --console=plain
+        run: gradle testReleaseUnitTest lintRelease "-PbuildPython=$(which python)" --console=plain
 
       - name: Check diagnostic transport isolation
         run: |
@@ -146,6 +110,7 @@ jobs:
             app/build/outputs/mapping/release/mapping.txt
             app/src/main/assets/engine-baseline.json
             app/src/main/assets/engine-extension.json
+            gpmc.lock.json
             app/build.gradle.kts
           retention-days: 90
           if-no-files-found: error
@@ -173,15 +138,7 @@ jobs:
             SRC_HASH=$(sha256sum "$SRC_FILE" | cut -d ' ' -f 1)
           fi
 
-          INPUT_TAG="${{ github.event.inputs.tag }}"
-          if [ -n "$INPUT_TAG" ]; then
-            TAG="$INPUT_TAG"
-          elif [ "${{ github.ref_type }}" = "tag" ]; then
-            TAG="${{ github.ref_name }}"
-          else
-            VERSION=$(echo "$APK_FILE" | sed -E 's/PicHarbor-(.+)-arm64\.apk/\1/')
-            TAG="v$VERSION"
-          fi
+          TAG="${{ steps.preflight.outputs.tag }}"
           echo "apk_file=$APK_FILE" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -220,31 +177,28 @@ jobs:
           fi
           cat notes.md
 
-      - name: Publish GitHub Release
+      - name: Upload signed build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-signed-${{ github.sha }}
+          path: |
+            dist/*
+            gpmc.lock.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish a new GitHub Release
+        if: steps.preflight.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.preflight.outputs.tag }}
         run: |
-          TAG="${{ steps.prepare_notes.outputs.tag }}"
-          
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists — uploading assets."
-            gh release upload "$TAG" dist/* --clobber
-          else
-            echo "Creating release $TAG..."
-            gh release create "$TAG" dist/* \
-              --title "PicHarbor Android $TAG" \
-              --notes-file notes.md \
-              --target "${{ github.sha }}" \
-              --draft
-
-            if [[ "$TAG" == *-* ]]; then
-              echo "Publishing pre-release $TAG..."
-              gh release edit "$TAG" --draft=false --prerelease --latest=false
-            else
-              echo "Publishing latest release $TAG..."
-              gh release edit "$TAG" --draft=false --latest
-            fi
-          fi
+          set -euo pipefail
+          FLAGS=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then FLAGS+=(--prerelease --latest=false); else FLAGS+=(--latest); fi
+          gh release create "$RELEASE_TAG" dist/* \
+            --title "PicHarbor Android $RELEASE_TAG" \
+            --notes-file notes.md --target "$GITHUB_SHA" "${FLAGS[@]}"
 
       - name: Cleanup signing credentials
         if: always()
