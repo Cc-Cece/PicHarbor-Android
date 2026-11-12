@@ -1,0 +1,40 @@
+name: Android verification
+on:
+  pull_request:
+  push:
+    branches: [main, feat/android-diagnostics]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: android-verification-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-build
+      - name: Verify source pins and diagnostic contracts
+        run: |
+          python tools/verify_engine.py
+          python -m pip install requests==2.32.5
+          python -m unittest discover -s tools -p test_diagnostics.py -v
+          python -m unittest discover -s tools -p test_release_preflight.py -v
+      - name: Build without release secrets and run checks
+        run: gradle :app:assembleDebug :app:testReleaseUnitTest :app:lintRelease "-PbuildPython=$(which python)" --console=plain
+      - name: Inspect packaged runtime and source lock
+        run: python tools/inspect_release.py --apk app/build/outputs/apk/debug/app-debug.apk
+      - name: Upload verification results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-verification-${{ github.sha }}
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/reports/
+            app/build/test-results/
+            gpmc.lock.json
+          if-no-files-found: warn
+          retention-days: 14

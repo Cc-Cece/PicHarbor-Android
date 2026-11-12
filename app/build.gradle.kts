@@ -59,6 +59,11 @@ chaquopy {
     }
 }
 dependencyLocking { lockAllConfigurations() }
+val verifyGpmc by tasks.registering(Exec::class) {
+    workingDir(rootProject.projectDir)
+    commandLine(providers.gradleProperty("buildPython").getOrElse("python"), "tools/verify_engine.py")
+}
+tasks.named("preBuild") { dependsOn(verifyGpmc) }
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.08.00"))
     implementation("androidx.activity:activity-compose:1.10.1")

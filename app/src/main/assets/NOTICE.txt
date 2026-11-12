@@ -1,5 +1,7 @@
 # 来源与许可证
 
+2026-11-12 起，gpmc 由独立 Cc-Cece/gpmc 仓库统一维护，根目录与 APK assets 的 gpmc.lock.json 固定实际源码内容。包级 NOTICE.md 和 _licenses 保留原始 MIT、导入的 PicHarbor GPL-3.0 及参考实现许可。旧 engine-baseline.json 中的 gpmc 记录仅作为历史来源保留，当前版本由新的内容锁校验。以下快照描述为历史记录。
+
 - 本项目 gpmc、blackboxprotobuf 脚本取自 PicHarbor 工作树的 `src/PicHarbor.Core/GooglePhotos/Embedded`。来源提交和逐文件哈希见 `app/src/main/assets/engine-baseline.json`，提交号不能代替实际内容哈希。
 - 已保留来源项目根目录的 GPL-3.0 许可证全文于 `LICENSE`，以及复制文件中的原始版权和许可声明。
 - blackboxprotobuf 源文件保留 NCC Group 的 MIT 许可声明。该声明不得因后续整理或发布被移除。

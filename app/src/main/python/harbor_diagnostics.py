@@ -154,11 +154,12 @@ def progress(phase, completed, total):
 
 def install(service):
     """Wrap only the mobile integration; the frozen protocol implementation stays intact."""
-    from gpmc.mobile import MobileApi
+    from harbor_android import MobileApi
 
     def session(api):
         result = ObservedSession()
         result.verify = True
+        result.trust_env = False
         if api.proxy:
             result.proxies.update({"https": api.proxy, "http": api.proxy})
         return result

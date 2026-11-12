@@ -1,5 +1,13 @@
 # Ensure frozen python engine files retain exact CRLF byte endings across git checkouts on all platforms
-app/src/main/python/gpmc/** text eol=crlf
+app/src/main/python/gpmc/** text eol=lf
 app/src/main/python/blackboxprotobuf/** text eol=crlf
 app/src/main/python/picharbor_engine.py text eol=lf
 app/src/main/python/harbor_diagnostics.py text eol=lf
+
+app/src/main/python/harbor_android.py text eol=lf
+
+tools/sync_gpmc.py text eol=lf
+gpmc.lock.json text eol=lf
+
+# The historical dependency manifest pins LICENSE as LF bytes on every OS.
+LICENSE text eol=lf

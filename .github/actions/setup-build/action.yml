@@ -1,0 +1,29 @@
+name: Verified Android build toolchain
+description: Prepare the pinned JDK, Python, and checksum-verified Gradle distribution
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+    - uses: gradle/actions/setup-gradle@v4
+    - name: Prepare verified Gradle distribution
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        python -c "from pathlib import Path; p=Path('gradle/wrapper/gradle-wrapper.properties').read_text(); assert 'gradle-8.13-bin.zip' in p and 'distributionSha256Sum=20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78' in p, 'Update verified Gradle asset mapping with the wrapper version'"
+        GRADLE_ZIP="$RUNNER_TEMP/gradle-8.13-bin.zip"
+        for attempt in 1 2 3; do
+          if gh api -H 'Accept: application/octet-stream' repos/gradle/gradle-distributions/releases/assets/232373824 > "$GRADLE_ZIP"; then break; fi
+          if [ "$attempt" = 3 ]; then exit 1; fi
+          sleep 5
+        done
+        echo "20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78  $GRADLE_ZIP" | sha256sum -c -
+        unzip -q -o "$GRADLE_ZIP" -d "$RUNNER_TEMP"
+        echo "$RUNNER_TEMP/gradle-8.13/bin" >> "$GITHUB_PATH"
