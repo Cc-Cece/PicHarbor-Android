@@ -118,6 +118,9 @@ jobs:
       - name: Package release artifacts
         run: python tools/package-release.py
 
+      - name: Verify the source package independently
+        run: python tools/verify_source_archive.py dist/*-source.zip
+
       - name: Compute SHA-256 checksums & prepare release notes
         id: prepare_notes
         run: |
