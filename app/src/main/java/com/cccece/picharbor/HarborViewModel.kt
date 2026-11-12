@@ -26,22 +26,6 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
     val jobDetails=inspectedJob.flatMapLatest{graph.dao.jobItemsFlow(it)}.stateIn(viewModelScope,SharingStarted.WhileSubscribed(5000),emptyList())
     var detailLimit by mutableIntStateOf(200)
     fun showJob(id:String){inspectedJob.value=id;detailLimit=200;navigate("job-details")}
-    val cleanups=settings.map{it.account}.distinctUntilChanged().flatMapLatest{graph.dao.cleanupFlow(it)}.stateIn(viewModelScope,SharingStarted.Eagerly,emptyList())
-    val cleanupScan=settings.map{it.account}.distinctUntilChanged().flatMapLatest{graph.dao.cleanupScanFlow(it)}.stateIn(viewModelScope,SharingStarted.Eagerly,null)
-    val cleanupTasks=cleanupScan.flatMapLatest{scan->if(scan==null)flowOf(emptyList()) else graph.dao.cleanupScanItemsFlow(scan.id)}.stateIn(viewModelScope,SharingStarted.WhileSubscribed(5000),emptyList())
-    var pendingCleanupPolicy by mutableStateOf<PendingCleanupPolicy?>(null);private set
-    fun requestCleanupPolicy(desired:CleanupPolicy) {
-        if(busy||pendingDelete.isNotEmpty()||graph.cleanup.progress.value.running){say("请先结束当前检查或清理操作");return}
-        val change=PendingCleanupPolicy(settings.value.account,settings.value.cleanupPolicy,desired)
-        if(change.previous==desired)return
-        if(desired.weakerThan(change.previous)){pendingCleanupPolicy=change;sheet="cleanup-risk"}
-        else action{graph.cleanup.changePolicy(change);pendingCleanupPolicy=null;message="已恢复检查，原清理资格已失效，请重新核验"}
-    }
-    fun confirmCleanupPolicy(acknowledgement:String)=action {
-        val change=pendingCleanupPolicy?:return@action
-        graph.cleanup.changePolicy(change,acknowledgement)
-        pendingCleanupPolicy=null;sheet="";message="已降低核验强度，请重新检查。清理前请留意跳过的项目。"
-    }
     var page by mutableStateOf("photos");private set
     var navigationForward by mutableStateOf(true);private set
     private val stack=mutableListOf<String>()
@@ -60,9 +44,7 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
     var loginRequired by mutableStateOf(false);private set
     var permissionRevision by mutableIntStateOf(0);private set
     var albumChoices by mutableStateOf(listOf<Pair<String,String>>());private set
-    var pendingDelete by mutableStateOf(listOf<CleanupRecord>());private set
     var pendingManualIds:List<String>?=null;private set
-    var deleteSummary by mutableStateOf("");private set
     val engineReady get()=graph.engineReady
     init { refresh() }
     fun navigate(destination:String){navigationForward=true;stack+=page;page=destination;sheet="";selected=emptySet();selectionMode=false}
@@ -101,12 +83,12 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
         sheet="";withContext(Dispatchers.Main){onLogin()}
     }
     fun selectAccount(email:String)=action {
-        graph.selectAccount(email);loginRequired=false;albumChoices=emptyList();pendingDelete=emptyList();clearSelection()
+        graph.selectAccount(email);loginRequired=false;albumChoices=emptyList();clearSelection()
         activeMedia=null;sheet="";page=if(page=="detail")"photos" else page
         message="已切换备份账号"
     }
     fun removeAccount(email:String)=action {
-        graph.removeAccount(email);loginRequired=false;pendingDelete=emptyList();sheet="";clearSelection();message="已从此设备移除账号，云端内容保留"
+        graph.removeAccount(email);loginRequired=false;sheet="";clearSelection();message="已从此设备移除账号，云端内容保留"
         withContext(Dispatchers.Main){android.webkit.CookieManager.getInstance().removeAllCookies(null);android.webkit.WebStorage.getInstance().deleteAllData()}
     }
     fun setBoolean(key:String,value:Boolean)=action {
@@ -177,9 +159,9 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
                 val failed=rows.count{it.state in setOf("failed","album_pending")}
                 message=when {
                     failed>0->"备份结束：成功 $success 项，$failed 项需要处理，可在任务记录重试"
-                    rows.all{it.state=="exists"}->"云端已有相同内容，已确认备份"
+                    rows.all{it.state=="exists"}->"云端已有相同内容，已确认备份；可在 Google 相册中使用官方“释放空间”"
                     rows.all{it.state=="cancelled"}->"本次备份已取消"
-                    else->"备份完成，共 $success 项"
+                    else->"备份完成，共 $success 项；云端已确认的内容，可在 Google 相册中使用官方“释放空间”"
                 }
             } finally {watched.remove(key)}
         }
@@ -196,28 +178,22 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
         graph.preferences.string("albumMode",mode);graph.preferences.string("albumValue",value);sheet=""
     }
     fun checkAccount()=action{graph.ensureAccount();loginRequired=false;message="账号连接正常，登录凭据会自动续期"}
-    fun verifyCleanup(ids:List<String>?=null,quick:Boolean=false)=action {
-        graph.cleanup.enqueue(ids,mode=if(quick)"quick" else "full")
-        message=if(androidx.core.app.NotificationManagerCompat.from(graph.app).areNotificationsEnabled())"已开始检查，可离开页面，完成后会通知你" else "检查已在后台开始；允许通知后可收到进度与完成提醒"
+    /**
+     * Official free-up-space handoff: PicHarbor no longer deletes local
+     * originals itself. Only cloud-confirmed backups are pointed at the
+     * official Google Photos free-up-space; opening the link does not change
+     * any task state and does not mean cleanup is done.
+     */
+    fun openOfficialFreeSpace()=action {
+        val outcome=FreeSpaceGuide.launch(graph.app)
+        Diagnostics.event("ui.intent",attrs=JSONObject().put("kind","free_space_open").put("outcome",outcome.name.lowercase()))
+        message=when(outcome) {
+            FreeSpaceGuide.Outcome.OPENED_LINK->"已打开 Google 相册释放空间，请在官方页面确认清理"
+            FreeSpaceGuide.Outcome.OPENED_PHOTOS->"已打开 Google 相册，请使用官方“释放空间”"
+            FreeSpaceGuide.Outcome.OPENED_STORE->"未安装 Google 相册，已打开应用商店"
+            FreeSpaceGuide.Outcome.MANUAL_GUIDANCE->FreeSpaceGuide.MANUAL_STEPS
+        }
     }
-    fun openCleanup(id:String="")=action {
-        val scan=if(id.isEmpty())null else graph.dao.cleanupScan(id)
-        if(scan!=null&&scan.account!=graph.preferences.get().account){sheet="account";message="请先切换到此次检查使用的账号"}
-        else navigate("cleanup")
-    }
-    suspend fun prepareCleanup():List<CleanupRecord> {
-        val records=graph.cleanup.prepareDelete();pendingDelete=records;return records
-    }
-    suspend fun restoreDelete(ids:List<String>){pendingDelete=graph.dao.cleanupByIds(ids)}
-    suspend fun completeDelete(approved:Boolean) {
-        val result=graph.cleanup.finishDelete(pendingDelete,approved);pendingDelete=emptyList()
-        deleteSummary=if(approved)"已释放 ${formatSize(result.second)}，移除 ${result.first} 个手机文件。云端备份会保留。" else "已取消清理，手机文件保留。"
-        sheet="cleanup-result";graph.media.scan()
-    }
-    fun deletionResult(approved:Boolean)=action {
-        completeDelete(approved)
-    }
-    fun localDeleteCandidates():List<MediaEntry> = media.value.filter{it.id in selected}
     fun report():String=JSONObject().put("app","PicHarbor").put("version",BuildConfig.VERSION_NAME).put("author","cc_cece")
         .put("device",android.os.Build.MODEL).put("android",android.os.Build.VERSION.SDK_INT).put("account_connected",settings.value.account.isNotBlank())
         .put("visible_media",media.value.size).put("completed_jobs",jobs.value.count{it.state=="completed"})
@@ -225,9 +201,7 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
         .put("saved_accounts",accounts.value.size)
         .put("task_states",JSONObject(items.value.groupingBy{it.state}.eachCount()))
         .put("task_errors",JSONObject(items.value.filter{it.error.isNotBlank()}.groupingBy{it.error}.eachCount()))
-        .put("cleanup_states",JSONObject(cleanups.value.groupingBy{it.state}.eachCount()))
-        .put("cleanup_reasons",JSONObject(cleanups.value.filter{it.reason.isNotBlank()}.groupingBy{it.reason}.eachCount()))
-        .put("cleanup_check",JSONObject().put("state",graph.cleanup.progress.value.state).put("checked",graph.cleanup.progress.value.checked).put("total",graph.cleanup.progress.value.total))
+        .put("harbor_core",graph.harborCore.status())
         .put("wifi_available",graph.backup.onWifi()).put("auto_enabled",settings.value.auto)
         .put("time",System.currentTimeMillis()).toString(2)
 }

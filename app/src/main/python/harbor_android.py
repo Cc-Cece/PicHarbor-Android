@@ -193,6 +193,18 @@ class MobileService:
                 sha1.update(chunk); sha256.update(chunk); completed += len(chunk)
         return {"sha1": sha1.hexdigest(), "sha256": sha256.hexdigest(), "size": completed}
 
+    def lookup(self, item, bridge, callback):
+        """Pre-upload dedup lookup for harbor_core.decide_prepare.
+
+        Hashes the source and asks the cloud for the same content. No bytes
+        are uploaded, nothing is committed and nothing is deleted; the
+        caller decides (via the core) whether the upload can be skipped.
+        Returns the digests plus the remote key ("" when absent).
+        """
+        digest = self.check_digest(item, bridge, callback)
+        key = self.client.api.find_remote_media_by_hash(bytes.fromhex(digest["sha1"]))
+        return {**digest, "remote_key": key or ""}
+
     def process(self, item, bridge, callback):
         self.check(callback)
         with diag.operation("source_open"):
@@ -495,6 +507,7 @@ class MobileService:
                 if values.get("_account", self.account) != self.account:
                     return json.dumps({"ok": False, "error": "ACCOUNT_CHANGED"})
                 if action == "process": result = self.process(values,bridge,callback)
+                elif action == "lookup": result = self.lookup(values,bridge,callback)
                 elif action == "synchronize":
                     with self.measured("cloud_sync"):
                         self.synchronize(callback, values.get("full", False))

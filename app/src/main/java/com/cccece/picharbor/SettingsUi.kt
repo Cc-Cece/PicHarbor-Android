@@ -113,12 +113,11 @@ fun AdvancedScreen(vm:HarborViewModel,data:HarborUiData,onExport:()->Unit) {
                 SettingsRow("同时上传数量","${data.settings.concurrency} 个",Icons.Outlined.CloudUpload,onClick={vm.sheet="concurrency"})
                 SettingsRow("连接超时","${data.settings.timeout} 秒",Icons.Outlined.Schedule,onClick={vm.sheet="timeout"})
                 ToggleRow("失败后自动重试","网络失败最多重试 3 次",data.settings.retries>0,Icons.Outlined.Refresh,!vm.busy){vm.setInteger("retries",if(it)3 else 0)}
-                ToggleRow("自动备份跳过云端同名文件","手动选中仍会核对内容；同名跳过不计入清理资格",data.settings.sameName,Icons.Outlined.ContentCopy,!vm.busy){vm.setBoolean("sameName",it)}
-                SettingsRow("空间检查速度","同时检查 ${data.settings.cleanupConcurrency} 项 · 下次检查生效",Icons.Outlined.Speed,onClick={vm.sheet="cleanup-speed"})
+                ToggleRow("自动备份跳过云端同名文件","手动选中仍会核对内容；同名跳过不代表已确认备份",data.settings.sameName,Icons.Outlined.ContentCopy,!vm.busy){vm.setBoolean("sameName",it)}
             }
+            SectionLabel("释放手机空间")
+            SettingGroup {SettingsRow("在 Google 相册释放空间","PicHarbor 不删除本机文件；仅云端确认备份后，建议使用官方释放空间",Icons.Outlined.AutoAwesome,onClick={vm.navigate("free-space")})}
             SectionLabel("诊断")
-            SettingGroup {SettingsRow("空间检查流程",data.settings.cleanupPolicy.label,Icons.Outlined.Security,onClick={vm.navigate("cleanup-policy")})}
-            if(!data.settings.cleanupPolicy.complete)Helper("已降低核验强度。可能在云端原件不可用或状态未确认时，仍允许移除手机文件。",Icons.Outlined.WarningAmber)
             SettingGroup {SettingsRow("检查账号连接","确认可以继续备份",Icons.Outlined.Security,onClick=vm::checkAccount);SettingsRow("导出诊断报告","不包含密码或登录凭据",Icons.Outlined.FileDownload,onClick=onExport)}
             Helper("设备厂商可能限制后台运行。应用会保存进度，并在允许执行时继续。")
         }
@@ -154,38 +153,23 @@ fun HistoryScreen(vm:HarborViewModel,data:HarborUiData) {
 fun jobLabel(state:String)=when(state){"completed"->"已完成";"running"->"进行中";"queued"->"等待开始";"paused"->"已暂停";"pausing"->"正在暂停";"waiting"->"等待网络";"auth_required"->"需要登录";"ended"->"已结束";else->"需要处理"}
 
 @Composable
-fun CleanupScreen(vm:HarborViewModel,data:HarborUiData,onCleanup:()->Unit) {
-    val now by rememberCleanupClock()
-    val context=LocalContext.current
-    val candidates=data.media.filter{data.backed(it)}
-    val ready=data.cleanups.filter{BackupPolicy.cleanupFresh(it,data.settings.account,now,data.settings.cleanupPolicy.id)}
-    val blocked=data.cleanups.filter{it.state=="blocked"&&it.scanId==data.cleanup.id&&data.cleanup.mode=="full"}.distinctBy{it.mediaId}
+fun FreeSpaceScreen(vm:HarborViewModel,data:HarborUiData) {
+    // Official Google Photos free-up-space guidance. PicHarbor no longer
+    // deletes local originals itself: only cloud-confirmed backups are
+    // pointed at the official cleanup (REQUIREMENTS.md 2026-10-19; Yuto
+    // decision 2026-11-13). Opening the link does not change any task state
+    // and does not mean cleanup is done.
+    val backed=data.media.filter{data.backed(it)}
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        PageTitle("释放手机空间",vm){IconButton(onClick={vm.sheet="cleanup-speed"}){Icon(Icons.Outlined.Speed,"空间检查速度")}}
+        PageTitle("释放手机空间",vm)
         Column(Modifier.padding(horizontal=24.dp),horizontalAlignment=Alignment.CenterHorizontally) {
-            EmptyState("给手机，留点新空间。","只移除手机原件，保留 Google 相册备份。",Icons.Outlined.AutoAwesome)
-            Text(formatSize(ready.sumOf{it.bytes}),style=MaterialTheme.typography.displayMedium,color=MaterialTheme.colorScheme.primary)
-            Text(if(data.cleanup.running)"已检查 ${data.cleanup.checked} / ${data.cleanup.total} 项，检查完成后可确认清理" else if(ready.isNotEmpty())if(data.settings.cleanupPolicy.complete)"${ready.size} 项已核验，可由你确认清理" else "${ready.size} 项基础匹配通过，请留意跳过的检查" else "${candidates.size} 个已备份项目（${formatSize(candidates.sumOf{it.size})}）待核验",style=MaterialTheme.typography.bodyMedium,modifier=Modifier.padding(vertical=12.dp))
-            if(data.cleanup.running) {
-                HarborProgress(if(data.cleanup.total>0)data.cleanup.checked.toFloat()/data.cleanup.total else 0f,modifier=Modifier.fillMaxWidth())
-                Text("${data.cleanup.checked} / ${data.cleanup.total} · ${data.cleanup.message}",style=MaterialTheme.typography.bodySmall,modifier=Modifier.padding(vertical=12.dp))
-                TextButton(onClick={vm.graph.cleanup.cancel()}){Text("取消检查")}
-                Helper("检查会在后台继续。你可以离开此页，完成后会收到通知。")
-            } else if(data.cleanup.message.isNotEmpty())Text(data.cleanup.message,style=MaterialTheme.typography.bodySmall)
-            if(data.cleanup.mode=="quick")Helper("快速检查只确认云端是否找到相同内容，不代表已满足清理条件。释放空间前仍需完整核验。")
-            if(data.cleanup.running)Text("最多同时检查 ${data.cleanup.effectiveParallel} 项",style=MaterialTheme.typography.bodySmall)
-            Helper(if(data.settings.cleanupPolicy.complete)"先核对内容、云端状态与原件可访问性。无法确认的项目会保留，不会完整回下载文件。" else "按你选择的流程检查；已开启的检查失败时仍会保留文件，不会自动跳过。",Icons.Outlined.Security)
-            if(!data.settings.cleanupPolicy.complete)CleanupPolicyNotice(data.settings.cleanupPolicy)
-            Helper("清理后仍可在 Google 相册查看；其他本地图库可能不再显示这些内容。",Icons.Outlined.PhotoLibrary)
-            Helper("清理只在你主动确认后进行，不会在备份后自动删除。",Icons.Outlined.Info)
-            if(ready.isNotEmpty()&&!data.cleanup.running)Button(onClick={vm.sheet="cleanup-confirm"},enabled=!vm.busy&&data.activeJob.isEmpty(),modifier=Modifier.fillMaxWidth()){Text("释放 ${formatSize(ready.take(100).sumOf{it.bytes})} 空间")}
-            FilledTonalButton(onClick={vm.verifyCleanup()},enabled=!vm.busy&&!data.cleanup.running&&data.settings.account.isNotEmpty()&&data.activeJob.isEmpty(),modifier=Modifier.fillMaxWidth().padding(top=10.dp)){Text(if(data.cleanup.running)"正在后台检查" else if(ready.isEmpty())"检查可释放空间" else "重新核验")}
-            OutlinedButton(onClick={vm.verifyCleanup(quick=true)},enabled=!vm.busy&&!data.cleanup.running&&data.settings.account.isNotEmpty()&&data.activeJob.isEmpty(),modifier=Modifier.fillMaxWidth().padding(top=8.dp)){Text("快速检查备份状态")}
-            Text("快速检查所选文件夹和已有备份记录中的本地文件，不删除照片。",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=8.dp))
-            if(!androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled())TextButton(onClick={context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE,context.packageName))}){Text("允许进度与完成通知")}
-            TextButton(onClick={vm.navigate("cleanup-results")}){Text("查看项目与未清理原因")}
-            if(data.cleanup.id.isNotEmpty())TextButton(onClick={vm.sheet="cleanup-timing"}){Text("查看检查耗时")}
-            if(blocked.isNotEmpty())Text("${blocked.size} 项暂未满足清理条件，手机原件已保留。",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            EmptyState("给手机，留点新空间。","备份确认后，由 Google 相册官方释放空间处理。",Icons.Outlined.AutoAwesome)
+            Text(formatSize(backed.sumOf{it.size}),style=MaterialTheme.typography.displayMedium,color=MaterialTheme.colorScheme.primary)
+            Text("${backed.size} 个已备份项目",style=MaterialTheme.typography.bodyMedium,modifier=Modifier.padding(vertical=12.dp))
+            Helper("只有云端确认已备份的内容，才建议去官方清理。无法确认的项目请保留手机原件。",Icons.Outlined.Security)
+            Helper("PicHarbor 不会扫描待删文件，也不会删除手机原件。清理只在 Google 相册官方功能里进行。",Icons.Outlined.Info)
+            Button(onClick=vm::openOfficialFreeSpace,enabled=!vm.busy,modifier=Modifier.fillMaxWidth()){Text("打开 Google 相册释放空间")}
+            Helper("将先尝试打开官方释放空间页面（https://photos.google.com/link/freeupspace）；打不开时会依次尝试启动 Google 相册应用、应用商店，或提示手动步骤。",Icons.Outlined.Info)
             Spacer(Modifier.height(20.dp))
         }
     }

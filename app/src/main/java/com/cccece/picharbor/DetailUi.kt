@@ -48,14 +48,14 @@ fun DetailScreen(vm:HarborViewModel,data:HarborUiData) {
         Column(Modifier.padding(22.dp),verticalArrangement=Arrangement.spacedBy(13.dp)) {
             Text(media.name,style=MaterialTheme.typography.titleLarge)
             Text(Instant.ofEpochMilli(media.captured).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("yyyy年M月d日 HH:mm")),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-            AssistChip(onClick={vm.say(if(status=="uploaded")"已确认当前账号云端存在对应内容；清理前仍会再次核验" else "备份时先核对云端内容，避免重复上传")},label={Text(when(status){"uploaded"->"已备份到当前账号";"error"->"需要处理";"uploading"->"正在备份";"pending"->"等待备份";else->"备份状态待确认"})},leadingIcon={Icon(if(status=="uploaded")Icons.Outlined.CloudDone else Icons.Outlined.CloudUpload,null)})
+            AssistChip(onClick={vm.say(if(status=="uploaded")"已确认当前账号云端存在对应内容；释放空间请使用 Google 相册官方功能" else "备份时先核对云端内容，避免重复上传")},label={Text(when(status){"uploaded"->"已备份到当前账号";"error"->"需要处理";"uploading"->"正在备份";"pending"->"等待备份";else->"备份状态待确认"})},leadingIcon={Icon(if(status=="uploaded")Icons.Outlined.CloudDone else Icons.Outlined.CloudUpload,null)})
             DetailRow("所在文件夹",media.folderName);DetailRow("文件大小",formatSize(media.size));DetailRow("类型",media.mime)
             if(data.backupMap[media.id]!=null)DetailRow("备份时的画质设置",qualityName(data.backupMap.getValue(media.id).quality))
             if(status=="uploaded")Helper("云端实际画质与存储空间占用，可在 Google 相册详情查看。")
-            if(status=="uploaded")Helper("已备份不等于可直接删除。释放空间会独立核验当前云端与本地内容。",Icons.Outlined.Security)
+            if(status=="uploaded")Helper("已备份不等于可直接删除。释放空间请使用 Google 相册官方功能。",Icons.Outlined.Security)
             Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
                 Button(onClick={vm.start(listOf(media.id))},enabled=!vm.busy,modifier=Modifier.weight(1f)){Text(if(status=="uploaded")"重新核对" else "立即备份")}
-                FilledTonalButton(onClick={vm.navigate("cleanup")},enabled=status=="uploaded",modifier=Modifier.weight(1f)){Text("释放空间")}
+                FilledTonalButton(onClick={vm.navigate("free-space")},enabled=status=="uploaded",modifier=Modifier.weight(1f)){Text("释放空间")}
             }
         }
     }

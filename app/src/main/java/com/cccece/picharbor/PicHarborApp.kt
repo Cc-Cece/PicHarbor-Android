@@ -35,11 +35,11 @@ class PicHarborApp:Application(), coil.ImageLoaderFactory, androidx.work.Configu
             try {
             runCatching { graph.credentials.migrateLegacy(graph.preferences.get().account) }
             graph.dao.recoverJobs();graph.dao.recoverItems()
+            runCatching { graph.backup.recoverCoreTasks() }
             // Staging contains only app-owned temporary copies, never original media.
             File(cacheDir,"staging").listFiles()?.forEach{it.delete()}
             graph.scheduler.configure()
             graph.scheduler.restorePending()
-            graph.cleanup.restorePending()
             } finally { graph.startup.complete(Unit) }
             graph.refreshProfile(graph.preferences.get().account)
         }
@@ -63,8 +63,8 @@ class AppGraph(val app:Application,val engineReady:Boolean) {
     val credentials=CredentialStore(app)
     val media=MediaRepository(app,dao,preferences)
     val engine=Engine(app)
+    val harborCore=HarborCore(File(app.filesDir,"runtime/harbor-store.json").absolutePath)
     val backup=BackupRepository(this)
-    val cleanup=CleanupRepository(this)
     val scheduler=Scheduler(this)
     fun refreshProfile(account:String,force:Boolean=false)=scope.launch {
         if(account.isBlank()||!profileLock.tryLock())return@launch
@@ -111,12 +111,12 @@ class AppGraph(val app:Application,val engineReady:Boolean) {
         val previousJob=backup.activeJob.value
         switching.value=true
         try {
-            scheduler.cancelTransfers();backup.stopAndWait();cleanup.stopAndWait()
+            scheduler.cancelTransfers();backup.stopAndWait()
             val result=engine.connect(credential,preferences.get().timeout)
             val account=result.getString("account")
             if(target!=null&&target!=account)throw EngineFailure("LOGIN_REQUIRED")
             credentials.save(account,result.getString("credential"))
-            if(previous!=account){dao.pauseAccountJobs(previous);dao.expireCleanup(previous,"ACCOUNT_CHANGED")}
+            if(previous!=account){dao.pauseAccountJobs(previous)}
             preferences.activateAccount(account)
             backup.notice.value=""
             dao.restoreAuthJobs(account);dao.restoreAuthItems(account)
@@ -135,8 +135,8 @@ class AppGraph(val app:Application,val engineReady:Boolean) {
         startup.await();accountLock.lock();switching.value=true
         try {
             if(preferences.get().account==account){
-                scheduler.cancelTransfers();backup.stopAndWait();cleanup.stopAndWait()
-                dao.pauseAccountJobs(account);dao.expireCleanup(account,"ACCOUNT_CHANGED")
+                scheduler.cancelTransfers();backup.stopAndWait()
+                dao.pauseAccountJobs(account)
                 if(engineReady)engine.call("logout")
                 preferences.activateAccount("")
                 backup.notice.value=""

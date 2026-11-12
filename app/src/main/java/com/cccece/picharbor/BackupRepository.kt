@@ -100,6 +100,26 @@ class BackupRepository(private val graph:AppGraph) {
         }
         graph.dao.putJob(job.copy(state="queued",automatic=false));graph.scheduler.launchManual(job.allowMobile)
     }
+    /**
+     * Best-effort recovery of shared-core tasks after a process restart.
+     * Core tasks left in uploading/submitting/confirming cannot be resumed
+     * mid-flight, so they are marked interrupted in the core and may be
+     * retried; the Room side is already reset to queued by recoverItems().
+     * Never throws: when the core is absent this is a no-op.
+     */
+    suspend fun recoverCoreTasks() {
+        val loaded=runCatching{graph.harborCore.storeLoad()}.getOrNull()?:return
+        if(!loaded.optBoolean("ok"))return
+        val tasks=loaded.optJSONObject("tasks")?:return
+        val keys=tasks.keys()
+        while(keys.hasNext()) {
+            val task=tasks.optJSONObject(keys.next())?:continue
+            val state=task.optString("state")
+            if(state in setOf(HarborCoreState.UPLOADING,HarborCoreState.SUBMITTING,HarborCoreState.CONFIRMING)) {
+                runCatching{graph.harborCore.transition(task,HarborCoreState.INTERRUPTED)}
+            }
+        }
+    }
     suspend fun end(jobId:String) {
         if(activeJob.value==jobId)stopAndWait()
         graph.dao.jobState(jobId,"ended")
@@ -185,7 +205,119 @@ class BackupRepository(private val graph:AppGraph) {
             }
         }
     }
+    /**
+     * Entry point for one item. Ordinary photos (media_kind=photo) go through
+     * the shared core; videos and anything the core declines keep the legacy
+     * direct-call path below. UI behaviour and item states are unchanged.
+     */
     private suspend fun process(job:BackupJob,item:BackupItem,settings:HarborSettings,cancelled:()->Boolean) {
+        val media=graph.dao.media(item.mediaId)
+        if(media!=null&&!media.video) {
+            if(runCatching{processPhotoWithCore(job,item,media,settings,cancelled)}.getOrDefault(false))return
+        }
+        processLegacy(job,item,settings,cancelled)
+    }
+    /**
+     * Ordinary-photo flow through HarborCore:
+     * create_task -> transition preparing -> engine lookup -> decide_prepare
+     * (dedup_hit skips the upload) -> transition uploading -> legacy
+     * transport -> transition submitting/confirming -> done only after the
+     * cloud commit returned a remote key. The core task dict is threaded
+     * through every transition (the core is stateless); a failed transition
+     * is a best-effort mirror failure and never blocks the local flow.
+     * Returns false when the core is unavailable or cannot decide, so the
+     * caller falls back to the legacy path; returns true once the core owns
+     * the task (including its failure handling). Content hashes are used for
+     * the core decision and never written to logs.
+     */
+    private suspend fun processPhotoWithCore(job:BackupJob,item:BackupItem,media:MediaEntry,settings:HarborSettings,cancelled:()->Boolean):Boolean {
+        val diagnostic=DiagnosticContext(job=job.id,item=item.id,attempt=UUID.randomUUID().toString())
+        var latest=item
+        var coreTask:JSONObject?=null
+        fun advance(result:JSONObject):JSONObject? {
+            val updated=graph.harborCore.updatedTask(result)
+            if(updated!=null)coreTask=updated
+            return updated
+        }
+        try {
+            val before=graph.media.current(media)?:throw EngineFailure("FILE_ACCESS")
+            if(before.first!=media.size||before.second!=media.modified)throw EngineFailure("SOURCE_CHANGED")
+            graph.dao.putItem(item.copy(state="hashing"))
+            val print=graph.engine.call("fingerprint",JSONObject().put("_diagnostics",diagnostic.json()).put("_account",job.account).put("uri",media.id).put("name",media.name))
+            val sha1=print.optString("sha1");val sha256=print.optString("sha256");val size=print.optLong("size",media.size)
+            if(sha1.isEmpty()||sha256.isEmpty()||size!=media.size)throw EngineFailure("SOURCE_CHANGED")
+            latest=latest.copy(sha1=sha1,sha256=sha256)
+            val asset=JSONObject().put("local_id",media.id).put("filename",media.name).put("sha1",sha1).put("sha256",sha256).put("size",size).put("media_kind","photo")
+            val created=graph.harborCore.createTask(item.id,asset,"android:${media.id}:${media.modified}")
+            if(advance(created)==null)return false
+            runCatching{graph.harborCore.logEvent("item.state_changed",item.id,JSONObject().put("state","created").put("filename",media.name))}
+            if(advance(graph.harborCore.transition(coreTask!!,HarborCoreState.PREPARING))==null)return false
+            val lookup=graph.engine.call("lookup",JSONObject().put("_diagnostics",diagnostic.json()).put("_account",job.account).put("uri",media.id).put("name",media.name))
+            val remoteKey=lookup.optString("remote_key")
+            val prepared=graph.harborCore.decidePrepare(asset,remoteKey.ifEmpty{null})
+            if(!prepared.optBoolean("ok")) {
+                runCatching{graph.harborCore.transition(coreTask!!,HarborCoreState.INTERRUPTED)}
+                return false
+            }
+            if(HarborCore.isDedupHit(prepared)) {
+                val hitKey=prepared.optString("remote_key")
+                if(hitKey.isNotEmpty()) {
+                    advance(graph.harborCore.transition(coreTask!!,HarborCoreState.DEDUP_HIT,remoteKey=hitKey))
+                    advance(graph.harborCore.transition(coreTask!!,HarborCoreState.DONE,cloudConfirmed=true))
+                    val record=BackupRecord(job.account,media.id,sha1,sha256,hitKey,size,media.modified,"unknown","content_exists",System.currentTimeMillis())
+                    graph.dao.putBackup(record)
+                    graph.dao.putItem(latest.copy(state="exists",remoteKey=hitKey,sha1=sha1,sha256=sha256,origin="content_exists",attempt=item.attempt+1))
+                    Diagnostics.event("item.state_changed",diagnostic,JSONObject().put("state","exists").put("code",""))
+                    runCatching{graph.harborCore.logEvent("item.state_changed",item.id,JSONObject().put("state","dedup_hit").put("filename",media.name))}
+                    return true
+                }
+                // Hit without a usable key: let the legacy transport confirm
+                // the content lookup itself instead of recording a bad key.
+            }
+            advance(graph.harborCore.transition(coreTask!!,HarborCoreState.UPLOADING))
+            processLegacy(job,latest,settings,cancelled)
+            val final=graph.dao.item(item.id)
+            when(final?.state) {
+                "done","exists"->{
+                    // Cloud confirmation here is the commit_upload response
+                    // carrying a remote key; the periodic reconcile() remains
+                    // the independent check against the cloud library.
+                    advance(graph.harborCore.transition(coreTask!!,HarborCoreState.SUBMITTING))
+                    advance(graph.harborCore.transition(coreTask!!,HarborCoreState.CONFIRMING))
+                    advance(graph.harborCore.transition(coreTask!!,HarborCoreState.DONE,cloudConfirmed=true))
+                    runCatching{graph.harborCore.logEvent("item.state_changed",item.id,JSONObject().put("state","done").put("filename",media.name))}
+                }
+                "album_pending"->{
+                    // Content is committed; only the album step is pending.
+                    advance(graph.harborCore.transition(coreTask!!,HarborCoreState.SUBMITTING))
+                    advance(graph.harborCore.transition(coreTask!!,HarborCoreState.CONFIRMING))
+                }
+                "failed"->{
+                    advance(graph.harborCore.transition(coreTask!!,HarborCoreState.FAILED,errorCode=final.error.ifBlank{null}))
+                    if(final.error in setOf("NETWORK_ERROR","RATE_LIMITED")) {
+                        val delayMs=runCatching{graph.harborCore.retryDelayMs(item.attempt)}.getOrDefault(-1)
+                        if(delayMs>=0)Diagnostics.event("retry.scheduled",diagnostic,JSONObject().put("code",final.error).put("retry_attempt",item.attempt+1).put("retry_limit",settings.retries).put("delay_ms",delayMs))
+                    }
+                }
+                "cancelled"->advance(graph.harborCore.transition(coreTask!!,HarborCoreState.CANCELLED))
+                else->{}
+            }
+            return true
+        } catch(error:Exception) {
+            coreTask?.let{task->runCatching{graph.harborCore.transition(task,HarborCoreState.INTERRUPTED)}}
+            return false
+        } finally {
+            inFlight.update{it-item.id}
+        }
+    }
+    /**
+     * deprecated-by-unification: legacy direct-call transport. Kept as the
+     * fallback while the shared core is rolling out, and as the transport
+     * underneath the new core-driven photo flow (the core decides, this call
+     * only moves bytes and commits). Do not add new business decisions here;
+     * they belong in harbor_core. Switch-over point: process() above.
+     */
+    private suspend fun processLegacy(job:BackupJob,item:BackupItem,settings:HarborSettings,cancelled:()->Boolean) {
         var latest=item
         val diagnostic=DiagnosticContext(job=job.id,item=item.id,attempt=UUID.randomUUID().toString())
         Diagnostics.event("item.state_changed",diagnostic,JSONObject().put("state","started").put("filename",item.name).put("retry_attempt",item.attempt+1))

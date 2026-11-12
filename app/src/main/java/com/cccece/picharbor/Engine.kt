@@ -73,7 +73,7 @@ object Messages {
         "REMOTE_MISSING"->"暂未在当前账号找到对应备份"
         "REMOTE_TRASHED"->"云端内容位于回收站，已保留手机原件"
         "ACCOUNT_CHANGED"->"账号已切换，请在当前账号重新操作"
-        "CLEANUP_RUNNING"->"检查尚未完成，请稍后清理"
+        "CLEANUP_RUNNING"->"该功能已取消，请使用 Google 相册官方释放空间"
         "CLOUD_TRASH_UNKNOWN"->"暂时无法核实云端回收站状态，手机原件已保留"
         "CLOUD_QUALITY_UNKNOWN"->"云端未返回原始画质信息，手机原件已保留"
         "CLOUD_PROCESSING"->"云端仍在处理文件，请稍后重新检查"

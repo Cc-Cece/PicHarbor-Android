@@ -40,35 +40,6 @@ private fun ResultList(vm:HarborViewModel,title:String,scopeKey:String,rows:List
 }
 
 @Composable
-fun CleanupResultsScreen(vm:HarborViewModel,data:HarborUiData) {
-    val latest by vm.cleanupScan.collectAsState()
-    val items by vm.cleanupTasks.collectAsState()
-    val now by rememberCleanupClock()
-    val scan=latest?.takeIf{it.account==data.settings.account}
-    val media=remember(data.media){data.media.associateBy{it.id}}
-    val records=remember(data.cleanups,scan){data.cleanups.filter{r->scan!=null&&(r.scanId==scan.id||(r.scanId.isEmpty()&&r.checkedAt>=scan.created&&r.id.startsWith("quick:")==(scan.mode=="quick")))}.associateBy{it.mediaId}}
-    val rows=if(scan==null)emptyList() else items.filter{it.scanId==scan.id}.map { item ->
-        val local=media[item.mediaId];val result=records[item.mediaId]
-        val category=CleanupResultPolicy.category(result,scan.account,now,scan.policy,data.settings.cleanupPolicy.id)
-        val description=when(category) {
-            "ready"->if(scan.policy=="full")"完整核验通过，等待你确认清理" else "基础匹配通过 · 已降低核验强度"
-            "found"->"云端找到相同内容，清理前仍需核验"
-            "removed"->"已从手机移除"
-            "pending"->if(result==null)if(item.done)"旧结果需要重新核验" else "尚未完成检查" else if(result.state=="cancelled")"已取消，手机原件保留" else "需要重新检查，原核验资格已失效"
-            else->Messages.error(result?.reason.orEmpty())
-        }
-        MediaResultRow(item.mediaId,local?.name?:"手机文件暂不可用",listOfNotNull(local?.let{"${it.folderName} · ${formatSize(it.size)}"},description).joinToString("\n"),local,category)
-    }
-    ResultList(vm,"核验结果",scan?.id.orEmpty(),rows,listOf((if(scan?.mode=="quick")"found" to "云端已找到" else "ready" to "可清理"),"pending" to "待检查","attention" to "需要处理","removed" to "已移除")) {
-        if(scan!=null)Column(Modifier.padding(horizontal=20.dp,vertical=6.dp)) {
-            if(scan.mode=="quick")Text("快速查询不授予清理资格。",style=MaterialTheme.typography.bodySmall)
-            else if(scan.policy!="full")Text("本次：${CleanupPolicy.fromId(scan.policy).label}，请留意跳过的检查。",color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall)
-            if(data.cleanup.running)Text("${data.cleanup.checked} / ${data.cleanup.total} · 检查在后台继续",style=MaterialTheme.typography.bodySmall)
-        }
-    }
-}
-
-@Composable
 fun JobDetailsScreen(vm:HarborViewModel,data:HarborUiData) {
     val id by vm.inspectedJob.collectAsState()
     val details by vm.jobDetails.collectAsState()

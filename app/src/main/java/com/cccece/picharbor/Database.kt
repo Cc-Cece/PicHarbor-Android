@@ -34,6 +34,10 @@ data class BackupItem(
 )
 
 @Entity(tableName = "cleanups", indices = [Index("account")])
+// Retained for read compatibility only. Self-built cleanup was removed
+// 2026-11-13 (REQUIREMENTS.md 2026-10-19; Yuto decision): no code writes
+// these tables any more and no delete may be driven from them. Whether to
+// drop them in a future migration is still undecided (doc-review D1).
 data class CleanupRecord(
     @PrimaryKey val id: String, val account: String, val mediaId: String, val bytes: Long,
     val sha256: String, val remoteKey: String, val checkedAt: Long, val state: String,
@@ -57,15 +61,6 @@ data class CleanupScanItem(val scanId:String,val mediaId:String,val done:Boolean
 
 @Dao
 interface HarborDao {
-    @Query("SELECT * FROM cleanup_scans WHERE account=:account ORDER BY created DESC LIMIT 1") fun cleanupScanFlow(account:String):Flow<CleanupScan?>
-    @Query("SELECT * FROM cleanup_scans WHERE account=:account ORDER BY created DESC LIMIT 1") suspend fun latestCleanupScan(account:String):CleanupScan?
-    @Query("SELECT * FROM cleanup_scans WHERE id=:id") suspend fun cleanupScan(id:String):CleanupScan?
-    @Upsert suspend fun putCleanupScan(scan:CleanupScan)
-    @Upsert suspend fun putCleanupScanItems(items:List<CleanupScanItem>)
-    @Upsert suspend fun putCleanupScanItem(item:CleanupScanItem)
-    @Query("SELECT * FROM cleanup_scan_items WHERE scanId=:id ORDER BY rowid") suspend fun cleanupScanItems(id:String):List<CleanupScanItem>
-    @Query("SELECT * FROM cleanup_scan_items WHERE scanId=:id ORDER BY rowid") fun cleanupScanItemsFlow(id:String):Flow<List<CleanupScanItem>>
-    @Query("SELECT COUNT(*) FROM cleanup_scan_items WHERE scanId=:id AND done=1") suspend fun cleanupChecked(id:String):Int
     @Query("SELECT * FROM media ORDER BY captured DESC, id") fun mediaFlow(): Flow<List<MediaEntry>>
     @Query("SELECT * FROM media ORDER BY captured DESC") suspend fun media(): List<MediaEntry>
     @Query("SELECT * FROM media WHERE id=:id") suspend fun media(id: String): MediaEntry?
@@ -100,11 +95,6 @@ interface HarborDao {
     @Query("UPDATE jobs SET state='paused' WHERE account=:account AND state IN ('queued','running','waiting','pausing')") suspend fun pauseAccountJobs(account:String)
     @Upsert suspend fun putItems(items: List<BackupItem>)
     @Upsert suspend fun putItem(item: BackupItem)
-    @Query("SELECT * FROM cleanups WHERE account=:account ORDER BY checkedAt DESC") fun cleanupFlow(account: String): Flow<List<CleanupRecord>>
-    @Query("SELECT * FROM cleanups WHERE account=:account AND state='ready'") suspend fun readyCleanup(account: String): List<CleanupRecord>
-    @Upsert suspend fun putCleanup(record: CleanupRecord)
-    @Query("SELECT * FROM cleanups WHERE id IN (:ids)") suspend fun cleanupByIds(ids:List<String>):List<CleanupRecord>
-    @Query("UPDATE cleanups SET state='expired', reason=:reason WHERE account=:account AND state='ready'") suspend fun expireCleanup(account:String,reason:String="RECHECK_REQUIRED")
 }
 
 @Database(entities = [MediaEntry::class, BackupRecord::class, BackupJob::class, BackupItem::class, CleanupRecord::class,CleanupScan::class,CleanupScanItem::class], version = 4, exportSchema = true)
@@ -143,7 +133,5 @@ abstract class HarborDatabase : RoomDatabase() {
 object BackupPolicy {
     fun matches(media: MediaEntry, record: BackupRecord?) = record != null && record.remoteKey.isNotBlank() &&
         record.size == media.size && record.modified == media.modified && record.sha256.isNotBlank()
-    fun cleanupFresh(record: CleanupRecord, account: String, now: Long,policy:String="full") = record.account == account && record.policy==policy && CleanupPolicy.recognized(policy) &&
-        record.state == "ready" && record.checkedAt <= now && now - record.checkedAt < 5 * 60_000
     val terminalItems = setOf("done", "exists", "filename_skipped", "failed", "cancelled")
 }

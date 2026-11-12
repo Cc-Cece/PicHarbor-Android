@@ -49,7 +49,7 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 data class HarborUiData(val settings:HarborSettings,val media:List<MediaEntry>,val backups:List<BackupRecord>,val jobs:List<BackupJob>,
-    val items:List<BackupItem>,val cleanups:List<CleanupRecord>,val transfer:TransferProgress,val activeJob:String,val cleanup:CleanupProgress,
+    val items:List<BackupItem>,val transfer:TransferProgress,val activeJob:String,
     val backupMap:Map<String,BackupRecord> = backups.filter{it.account==settings.account}.associateBy{it.mediaId},
     val itemMap:Map<String,BackupItem> = items.filter{it.account==settings.account}.asReversed().associateBy{it.mediaId},
     val scope:List<MediaEntry> = media.filter{settings.includes(it)},
@@ -71,27 +71,27 @@ data class HarborUiData(val settings:HarborSettings,val media:List<MediaEntry>,v
 }
 
 @Composable
-fun HarborRoot(vm:HarborViewModel,onLogin:()->Unit,onPermissions:()->Unit,onPickFiles:()->Unit,onPickTree:()->Unit,onCleanup:()->Unit,onLocalDelete:()->Unit,onExport:()->Unit) {
+fun HarborRoot(vm:HarborViewModel,onLogin:()->Unit,onPermissions:()->Unit,onPickFiles:()->Unit,onPickTree:()->Unit,onLocalDelete:()->Unit,onExport:()->Unit) {
     val settings by vm.settings.collectAsState()
     val media by vm.media.collectAsState();val records by vm.records.collectAsState();val jobs by vm.jobs.collectAsState()
-    val items by vm.items.collectAsState();val cleanups by vm.cleanups.collectAsState()
+    val items by vm.items.collectAsState()
     val statistics by vm.statistics.collectAsState()
-    val transfer by vm.graph.backup.progress.collectAsState();val active by vm.graph.backup.activeJob.collectAsState();val cleanup by vm.graph.cleanup.progress.collectAsState()
+    val transfer by vm.graph.backup.progress.collectAsState();val active by vm.graph.backup.activeJob.collectAsState()
     val notice by vm.graph.backup.notice.collectAsState()
     val transfers by vm.graph.backup.inFlight.collectAsState()
-    val base=remember(settings,media,records,jobs,items,cleanups,statistics){
+    val base=remember(settings,media,records,jobs,items,statistics){
         // DataStore and Room emit independently during a switch: hide any old-account frame.
         val accountJobs=jobs.filter{it.account==settings.account}
         val jobIds=accountJobs.map{it.id}.toSet()
         HarborUiData(settings,media,records.filter{it.account==settings.account},accountJobs,
-            items.filter{it.account==settings.account},cleanups.filter{it.account==settings.account},
-            TransferProgress(),"",CleanupProgress(),statistics=statistics.filter{it.jobId in jobIds})
+            items.filter{it.account==settings.account},
+            TransferProgress(),"",statistics=statistics.filter{it.jobId in jobIds})
     }
-    val data=base.copy(transfer=transfer,activeJob=active,cleanup=if(cleanup.account==settings.account)cleanup else CleanupProgress())
+    val data=base.copy(transfer=transfer,activeJob=active)
     LaunchedEffect(data.activeJob,data.transfer.item,data.transfer.phase) {
         if(data.activeJob.isNotEmpty())Diagnostics.event("ui.snapshot",DiagnosticContext(job=data.activeJob,item=data.transfer.item),org.json.JSONObject().put("phase",data.transfer.phase).put("source_read_bytes",data.transfer.bytes))
     }
-    val hasStatus=topBackupJob(data)!=null||data.cleanup.running
+    val hasStatus=topBackupJob(data)!=null
     val snackbar=remember{SnackbarHostState()}
     val pageState=rememberSaveableStateHolder()
     LaunchedEffect(vm.message){if(vm.message.isNotBlank()){snackbar.showSnackbar(vm.message);vm.clearMessage()}}
@@ -126,12 +126,10 @@ fun HarborRoot(vm:HarborViewModel,onLogin:()->Unit,onPermissions:()->Unit,onPick
                                 "network"->NetworkScreen(vm,data)
                                 "advanced"->AdvancedScreen(vm,data,onExport)
                                 "history"->HistoryScreen(vm,data)
-                                "cleanup"->CleanupScreen(vm,data,onCleanup)
+                                "free-space"->FreeSpaceScreen(vm,data)
                                 "detail"->DetailScreen(vm,data)
                                 "backup-list"->BackupListScreen(vm,data)
-                                "cleanup-results"->CleanupResultsScreen(vm,data)
                                 "job-details"->JobDetailsScreen(vm,data)
-                                "cleanup-policy"->CleanupPolicyScreen(vm,data)
                                 else->PhotosScreen(vm,data,onPermissions,onPickFiles)
                             }
                             if(vm.busy&&!hasStatus)LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
@@ -150,7 +148,7 @@ fun HarborRoot(vm:HarborViewModel,onLogin:()->Unit,onPermissions:()->Unit,onPick
           }
             SnackbarHost(snackbar,Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom=if(vm.page in setOf("photos","backup","me"))80.dp else 0.dp))
         }
-        HarborSheets(vm,data,onLogin,onCleanup,onLocalDelete,onPickTree)
+        HarborSheets(vm,data,onLogin,onLocalDelete,onPickTree)
     }
 }
 
@@ -347,8 +345,8 @@ fun ProfileScreen(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit) {
                 Column(Modifier.fillMaxWidth().padding(24.dp)){
                     Text("给手机腾点空间",style=MaterialTheme.typography.labelLarge)
                     Text(formatSize(backed.sumOf{it.size}),style=MaterialTheme.typography.displaySmall,modifier=Modifier.padding(vertical=8.dp))
-                    Text("${backed.size} 个已备份项目可进一步核验",style=MaterialTheme.typography.bodySmall)
-                    Spacer(Modifier.height(15.dp));Button(onClick={vm.navigate("cleanup")}){Icon(Icons.Outlined.AutoAwesome,null);Spacer(Modifier.width(8.dp));Text("释放手机空间")}
+                    Text("${backed.size} 个已备份项目",style=MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(15.dp));Button(onClick={vm.navigate("free-space")}){Icon(Icons.Outlined.AutoAwesome,null);Spacer(Modifier.width(8.dp));Text("在 Google 相册释放空间")}
                 }
             }
             SectionLabel("偏好设置")

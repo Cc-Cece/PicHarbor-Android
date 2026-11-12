@@ -25,12 +25,11 @@ fun Choice(label:String,checked:Boolean,description:String="",onClick:()->Unit) 
     }
 }
 @Composable
-fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onCleanup:()->Unit,onLocalDelete:()->Unit,onPickTree:()->Unit) {
+fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onLocalDelete:()->Unit,onPickTree:()->Unit) {
     val context=LocalContext.current
     val accounts by vm.accounts.collectAsState()
     val mode=vm.sheet
     if(mode.isEmpty())return
-    val cleanupNow by rememberCleanupClock()
     var input by remember(mode){mutableStateOf(if(mode=="time")data.settings.time else "")}
     var dateDialog by remember(mode){mutableStateOf(false)}
     val dates=rememberDateRangePickerState()
@@ -59,14 +58,6 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onCleanup
         mode=="concurrency"->"同时上传数量"
         mode=="timeout"->"连接超时"
         mode=="delete-local"->"从手机删除？"
-        mode=="cleanup-confirm"->"确认释放手机空间"
-        mode=="cleanup-list"->"核验结果"
-        mode=="cleanup-result"->"清理结果"
-        mode=="cleanup-speed"->"空间检查速度"
-        mode=="cleanup-readers"->"同时读取文件数量"
-        mode=="cleanup-retries"->"检查失败重试"
-        mode=="cleanup-timing"->"检查耗时详情"
-        mode=="cleanup-risk"->"降低检查强度？"
         mode.startsWith("job:")->"任务详情"
         mode.startsWith("end:")->"结束当前任务？"
         else->"PicHarbor"
@@ -164,48 +155,6 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onCleanup
                 }
                 mode=="concurrency"->{(1..3).forEach{n->Choice(if(n==2)"2 个（默认）" else "$n 个",data.settings.concurrency==n){vm.setInteger("concurrency",n)}}}
                 mode=="timeout"->{listOf(30,60,120).forEach{n->Choice("$n 秒",data.settings.timeout==n){vm.setInteger("timeout",n)}}}
-                mode=="cleanup-speed"->{
-                    listOf(Triple(1,"较省资源","最多同时检查 1 项"),Triple(2,"均衡（默认）","最多同时检查 2 项"),Triple(4,"较快","最多同时检查 4 项")).forEach{(n,label,description)->
-                        Choice(label,data.settings.cleanupConcurrency==n,description){vm.setInteger("cleanupConcurrency",n);vm.sheet=""}
-                    }
-                    var maximum by remember{mutableFloatStateOf(data.settings.cleanupConcurrency.toFloat())}
-                    Text("自定义：最多 ${maximum.toInt()} 项")
-                    Slider(value=maximum,onValueChange={maximum=it},valueRange=1f..20f,steps=18)
-                    Button(onClick={vm.setInteger("cleanupConcurrency",maximum.toInt());vm.sheet=""},modifier=Modifier.fillMaxWidth()){Text("应用自定义数量")}
-                    Helper("较高数值可能增加耗电，并不一定更快。不省略核验，对下次检查生效。")
-                    SettingsRow("同时读取文件数量","${data.settings.cleanupReaders} 个 · 避免同时读取大量视频",Icons.Outlined.Folder,onClick={vm.sheet="cleanup-readers"})
-                    SettingsRow("检查失败重试","最多 ${data.settings.cleanupRetries} 次",Icons.Outlined.Refresh,onClick={vm.sheet="cleanup-retries"})
-                    Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){Text("连接不稳定时自动降速",Modifier.weight(1f));Switch(data.settings.cleanupAdaptive,{vm.setBoolean("cleanupAdaptive",it)})}
-                    Helper("网络恢复后逐步提高至设置上限；登录失效直接停止。")
-                }
-                mode=="cleanup-readers"->{(1..4).forEach{n->Choice("$n 个"+(if(n==2)"（默认）" else ""),data.settings.cleanupReaders==n){vm.setInteger("cleanupReaders",n);vm.sheet="cleanup-speed"}}}
-                mode=="cleanup-retries"->{(0..3).forEach{n->Choice(if(n==0)"不重试" else "$n 次",data.settings.cleanupRetries==n){vm.setInteger("cleanupRetries",n);vm.sheet="cleanup-speed"}}}
-                mode=="cleanup-timing"->{CheckTimingDetails(data.cleanup)}
-                mode=="cleanup-risk"->{
-                    val change=vm.pendingCleanupPolicy
-                    if(change!=null) {
-                        Text("可能在云端原件不可用或状态未确认时，仍允许删除手机文件。删除后可能无法恢复。",color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.titleMedium)
-                        CleanupPolicyNotice(change.desired)
-                        Text("此次变更会使已有清理资格失效，必须重新检查。核心内容检查及系统删除确认仍然保留。")
-                        Text("请手动输入：${CleanupPolicy.ACKNOWLEDGEMENT}")
-                        OutlinedTextField(value=input,onValueChange={input=it},label={Text("输入风险确认语")},modifier=Modifier.fillMaxWidth(),minLines=2)
-                        Button(onClick={vm.confirmCleanupPolicy(input)},enabled=input==CleanupPolicy.ACKNOWLEDGEMENT&&!vm.busy,modifier=Modifier.fillMaxWidth()){Text("确认降低检查强度")}
-                        TextButton(onClick={vm.sheet=""}){Text("保留原设置")}
-                    }
-                }
-                mode=="cleanup-confirm"->{
-                    val ready=data.cleanups.filter{BackupPolicy.cleanupFresh(it,data.settings.account,cleanupNow,data.settings.cleanupPolicy.id)}.take(100)
-                    Text("本次最多移除 ${ready.size} 个已核验的手机文件，释放 ${formatSize(ready.sumOf{it.bytes})}。")
-                    Helper("Google 相册中的备份会保留。手机原件将被移除，其他本地图库可能不再显示；此清理操作可能无法从手机恢复。",Icons.Outlined.Security)
-                    CleanupPolicyNotice(data.settings.cleanupPolicy)
-                    Button(onClick=onCleanup,enabled=ready.isNotEmpty()&&!vm.busy&&!data.cleanup.running,modifier=Modifier.fillMaxWidth()){Text("继续并确认清理")}
-                    TextButton(onClick={vm.sheet=""}){Text("暂不清理")}
-                }
-                mode=="cleanup-result"->{
-                    EmptyState("清理操作已结束",vm.deleteSummary,Icons.Outlined.CloudDone)
-                    Button(onClick={vm.sheet=""},modifier=Modifier.fillMaxWidth()){Text("完成")}
-                    TextButton(onClick={runCatching{context.startActivity(Intent(Intent.ACTION_VIEW,Uri.parse("https://photos.google.com/")))}}){Text("前往 Google 相册")}
-                }
                 mode=="delete-local"->{
                     val local=data.media.filter{it.id in vm.selected}
                     Text("将从手机处理 ${local.size.coerceAtMost(100)} 个项目，云端备份不受影响。")
@@ -227,7 +176,7 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onCleanup
                 mode=="about"->{
                     EmptyState("PicHarbor","为珍贵的日常，留一份安心。",Icons.Outlined.CloudDone)
                     Text("版本 ${BuildConfig.VERSION_NAME} · 作者 cc_cece")
-                    Helper("备份到 Google 相册，支持手动与自动备份、状态查看及核验后释放空间。不是 Google 官方客户端。")
+                    Helper("备份到 Google 相册，支持手动与自动备份、状态查看；释放空间请使用 Google 相册官方功能。不是 Google 官方客户端。")
                     Helper("本应用无自建业务服务器、无广告或分析上报。照片和必要认证数据直接发送至 Google 服务。")
                     TextButton(onClick={vm.sheet="licenses"}){Text("开源许可")}
                 }
