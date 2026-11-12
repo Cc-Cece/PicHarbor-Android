@@ -6,12 +6,25 @@
 
 | 工作范围 | 仓库与推荐起点 | 说明 |
 | --- | --- | --- |
-| 共享协议、上传、认证、公共错误与证据规则 | [Cc-Cece/gpmc](https://github.com/Cc-Cece/gpmc) 的 `main` | 唯一 gpmc 维护源；新工作从这里创建任务分支 |
-| Android 日志、业务与共享核心接入 | [PicHarbor-Android](https://github.com/Cc-Cece/PicHarbor-Android/tree/feat/android-diagnostics) 的 `feat/android-diagnostics` | 已包含诊断体系和已合并的 gpmc，不从旧 main 重做 |
-| iOS 继续当前整合或承接最新代码 | [PicHarbor-iOS](https://github.com/Cc-Cece/PicHarbor-iOS/tree/feat/unified-gpmc) 的 `feat/unified-gpmc` | 最新 gpmc/构建修复都在这里，但原生测试未通过；先处理实际阻塞再合并，不视为稳定发布基线 |
-| 电脑端业务与共享核心接入 | [PicHarbor](https://github.com/Cc-Cece/PicHarbor/tree/feat/paired-backup-scope) 的 `feat/paired-backup-scope` | 已合并 gpmc 且完整 CI 通过 |
+| 共享协议、上传、认证、公共错误与证据规则 | [Cc-Cece/gpmc](https://github.com/Cc-Cece/gpmc/tree/baseline/mobile-unification-20261112) 的 `baseline/mobile-unification-20261112` | 从中央库 main 建立；唯一 gpmc 维护源不变 |
+| Android 日志、业务与共享核心接入 | [PicHarbor-Android](https://github.com/Cc-Cece/PicHarbor-Android/tree/baseline/mobile-unification-20261112) 的 `baseline/mobile-unification-20261112` | 从诊断分支建立，已包含诊断体系和 gpmc |
+| iOS 继续当前整合或承接最新代码 | [PicHarbor-iOS](https://github.com/Cc-Cece/PicHarbor-iOS/tree/baseline/mobile-unification-20261112) 的 `baseline/mobile-unification-20261112` | 从最新整合分支建立，仍有 3 项原生测试失败，不视为稳定发布基线 |
+| 电脑端业务与共享核心接入 | [PicHarbor](https://github.com/Cc-Cece/PicHarbor/tree/baseline/mobile-unification-20261112) 的 `baseline/mobile-unification-20261112` | 从已合并 gpmc、完整 CI 通过的功能分支建立 |
 
 以上是延续本次工作的入口，并不表示所有历史功能已合入。新任务宜从对应起点建立新分支。若只修已发布版本，从该仓库 `origin/main` 或对应发布标签建立维护分支，并单独处理向功能线回合；不能把较新功能分支直接当作发布主线。
+
+## 统一命名的后续基线
+
+按用户要求，四仓库均已建立并推送 `baseline/mobile-unification-20261112`，四个主工作区均已切换至该分支。它表示同一工作阶段的起点，不表示四仓库提交 SHA 相同，也没有将旧功能额外合并或改变 main。
+
+| 仓库 | 创建来源 | 创建时提交 |
+| --- | --- | --- |
+| Android | `feat/android-diagnostics` | `f7845a65a4b622e2a901aac853d1c39308134c32` |
+| iOS | `feat/unified-gpmc` | `90ac7e16130ecdfb4845bc86225c23a1e65698f9` |
+| 电脑 | `feat/paired-backup-scope` | `a4b687688e245f60f8149c9a3e1d09471925109d` |
+| gpmc | `main` | `a5d11cffbe021d02f0fc686d2953c53c36f438a3` |
+
+本总结的更新提交仅增加在 Android 基线上，未改业务代码。后续任务从各仓库此同名基线创建任务分支；正式合并和发布仍分别执行审核与必要验证。共享 gpmc 的正式维护主线仍为中央库 main，客户端依旧通过锁定快照接入。现有 iOS PR #2 的来源和目标保持不变；如在新任务分支修复其阻塞，应将相应修复同步回该 PR，避免两条活动实现分叉。
 
 Android 本地 `main` 比 `origin/main` 落后两次提交，且 `origin/main` 与诊断分支存在分叉（主线独有 2 次、诊断分支独有 12 次；本总结提交前）。本次没有为同步而自动合并这些分支。
 
@@ -58,8 +71,9 @@ iOS 当前失败：`SubscriptionQRCodeTests.testPhotoQRCodeIsRecognizedLocally` 
 
 | Branch | Local HEAD | GitHub HEAD | State |
 | --- | --- | --- | --- |
+| [`baseline/mobile-unification-20261112`](https://github.com/Cc-Cece/PicHarbor-Android/tree/baseline/mobile-unification-20261112) | `f7845a6` | `f7845a6` | synced; current |
 | [`docs/gpmc-review-results`](https://github.com/Cc-Cece/PicHarbor-Android/tree/docs/gpmc-review-results) | `37173cb` | `37173cb` | synced |
-| [`feat/android-diagnostics`](https://github.com/Cc-Cece/PicHarbor-Android/tree/feat/android-diagnostics) | `d10c073` | `d10c073` | synced; current |
+| [`feat/android-diagnostics`](https://github.com/Cc-Cece/PicHarbor-Android/tree/feat/android-diagnostics) | `d10c073` | `d10c073` | synced |
 | [`feat/live-link`](https://github.com/Cc-Cece/PicHarbor-Android/tree/feat/live-link) | `bce7ed7` | `bce7ed7` | synced |
 | [`feat/paired-backup-scope`](https://github.com/Cc-Cece/PicHarbor-Android/tree/feat/paired-backup-scope) | `3bcabe8` | `3bcabe8` | synced |
 | [`feat/unified-gpmc`](https://github.com/Cc-Cece/PicHarbor-Android/tree/feat/unified-gpmc) | `0e34f76` | `0e34f76` | synced |
@@ -69,9 +83,10 @@ iOS 当前失败：`SubscriptionQRCodeTests.testPhotoQRCodeIsRecognizedLocally` 
 
 | Branch | Local HEAD | GitHub HEAD | State |
 | --- | --- | --- | --- |
+| [`baseline/mobile-unification-20261112`](https://github.com/Cc-Cece/PicHarbor-iOS/tree/baseline/mobile-unification-20261112) | `90ac7e1` | `90ac7e1` | synced; current |
 | [`feat/live-link`](https://github.com/Cc-Cece/PicHarbor-iOS/tree/feat/live-link) | `71f2021` | `71f2021` | synced |
 | [`feat/paired-backup-scope`](https://github.com/Cc-Cece/PicHarbor-iOS/tree/feat/paired-backup-scope) | `0d95a07` | `0d95a07` | synced |
-| [`feat/unified-gpmc`](https://github.com/Cc-Cece/PicHarbor-iOS/tree/feat/unified-gpmc) | `90ac7e1` | `90ac7e1` | synced; current |
+| [`feat/unified-gpmc`](https://github.com/Cc-Cece/PicHarbor-iOS/tree/feat/unified-gpmc) | `90ac7e1` | `90ac7e1` | synced |
 | [`main`](https://github.com/Cc-Cece/PicHarbor-iOS/tree/main) | `f3cf627` | `f3cf627` | synced |
 | [`proxy-validation-0215`](https://github.com/Cc-Cece/PicHarbor-iOS/tree/proxy-validation-0215) | `3a9498f` | `3a9498f` | synced |
 | [`verify-google-photos-handoff-0211-2bd2d06`](https://github.com/Cc-Cece/PicHarbor-iOS/tree/verify-google-photos-handoff-0211-2bd2d06) | - | `2bd2d06` | remote only |
@@ -81,12 +96,13 @@ iOS 当前失败：`SubscriptionQRCodeTests.testPhotoQRCodeIsRecognizedLocally` 
 
 | Branch | Local HEAD | GitHub HEAD | State |
 | --- | --- | --- | --- |
+| [`baseline/mobile-unification-20261112`](https://github.com/Cc-Cece/PicHarbor/tree/baseline/mobile-unification-20261112) | `a4b6876` | `a4b6876` | synced; current |
 | [`docs/publish-readme`](https://github.com/Cc-Cece/PicHarbor/tree/docs/publish-readme) | `d5af668` | `d5af668` | synced |
 | [`feat/android-backup-to-pc`](https://github.com/Cc-Cece/PicHarbor/tree/feat/android-backup-to-pc) | `9a00202` | `9a00202` | synced |
 | [`feat/backup-history-and-db-maintenance`](https://github.com/Cc-Cece/PicHarbor/tree/feat/backup-history-and-db-maintenance) | `cd77230` | `cd77230` | synced |
 | [`feat/google-login-webview-proxy`](https://github.com/Cc-Cece/PicHarbor/tree/feat/google-login-webview-proxy) | `8009d2b` | `8009d2b` | synced |
 | [`feat/live-link`](https://github.com/Cc-Cece/PicHarbor/tree/feat/live-link) | `fb15e70` | `fb15e70` | synced |
-| [`feat/paired-backup-scope`](https://github.com/Cc-Cece/PicHarbor/tree/feat/paired-backup-scope) | `a4b6876` | `a4b6876` | synced; current |
+| [`feat/paired-backup-scope`](https://github.com/Cc-Cece/PicHarbor/tree/feat/paired-backup-scope) | `a4b6876` | `a4b6876` | synced |
 | [`feat/pcl2-ui-redesign`](https://github.com/Cc-Cece/PicHarbor/tree/feat/pcl2-ui-redesign) | `fb5cf85` | `fb5cf85` | synced |
 | [`feat/sweet-album-gallery`](https://github.com/Cc-Cece/PicHarbor/tree/feat/sweet-album-gallery) | `889d0fc` | `889d0fc` | synced |
 | [`feat/unified-gpmc`](https://github.com/Cc-Cece/PicHarbor/tree/feat/unified-gpmc) | `7077bfc` | `7077bfc` | synced |
@@ -104,9 +120,10 @@ iOS 当前失败：`SubscriptionQRCodeTests.testPhotoQRCodeIsRecognizedLocally` 
 
 | Branch | Local HEAD | GitHub HEAD | State |
 | --- | --- | --- | --- |
+| [`baseline/mobile-unification-20261112`](https://github.com/Cc-Cece/gpmc/tree/baseline/mobile-unification-20261112) | `a5d11cf` | `a5d11cf` | synced; current |
 | [`docs/gpmc-review-results`](https://github.com/Cc-Cece/gpmc/tree/docs/gpmc-review-results) | `31c1ad4` | `31c1ad4` | synced |
 | [`feat/unified-gpmc`](https://github.com/Cc-Cece/gpmc/tree/feat/unified-gpmc) | `08d9ae6` | `08d9ae6` | synced |
-| [`main`](https://github.com/Cc-Cece/gpmc/tree/main) | `a5d11cf` | `a5d11cf` | synced; current |
+| [`main`](https://github.com/Cc-Cece/gpmc/tree/main) | `a5d11cf` | `a5d11cf` | synced |
 | [`release-please--branches--main--components--gpmc`](https://github.com/Cc-Cece/gpmc/tree/release-please--branches--main--components--gpmc) | - | `a9eb736` | remote only |
 
 ### Extra worktrees
