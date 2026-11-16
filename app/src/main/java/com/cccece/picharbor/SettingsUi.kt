@@ -117,6 +117,7 @@ fun AdvancedScreen(vm:HarborViewModel,data:HarborUiData,onExport:()->Unit) {
                 ToggleRow("失败后自动重试","网络失败最多重试 3 次",data.settings.retries>0,Icons.Outlined.Refresh,!vm.busy){vm.setInteger("retries",if(it)3 else 0)}
                 ToggleRow("自动备份跳过云端同名文件","手动选中仍会核对内容；同名跳过不代表已确认备份",data.settings.sameName,Icons.Outlined.ContentCopy,!vm.busy){vm.setBoolean("sameName",it)}
             }
+            // 代理行直接读 data.settings（AdvancedScreen 未定义本地 s）
             SectionLabel("网络代理")
             SettingGroup {SettingsRow("代理",if(data.settings.proxyEnabled)"已启用：${data.settings.proxyScheme}://${data.settings.proxyHost}:${data.settings.proxyPort}" else "未启用（默认直连）",Icons.Outlined.Public,onClick={vm.sheet="proxy"})}
             SectionLabel("释放手机空间")
