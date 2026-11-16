@@ -118,7 +118,7 @@ fun AdvancedScreen(vm:HarborViewModel,data:HarborUiData,onExport:()->Unit) {
                 ToggleRow("自动备份跳过云端同名文件","手动选中仍会核对内容；同名跳过不代表已确认备份",data.settings.sameName,Icons.Outlined.ContentCopy,!vm.busy){vm.setBoolean("sameName",it)}
             }
             SectionLabel("网络代理")
-            SettingGroup {SettingsRow("代理",if(s.proxyEnabled)"已启用：${s.proxyScheme}://${s.proxyHost}:${s.proxyPort}" else "未启用（默认直连）",Icons.Outlined.Public,onClick={vm.sheet="proxy"})}
+            SettingGroup {SettingsRow("代理",if(data.settings.proxyEnabled)"已启用：${data.settings.proxyScheme}://${data.settings.proxyHost}:${data.settings.proxyPort}" else "未启用（默认直连）",Icons.Outlined.Public,onClick={vm.sheet="proxy"})}
             SectionLabel("释放手机空间")
             SettingGroup {SettingsRow("在 Google 相册释放空间","PicHarbor 不删除本机文件；仅云端确认备份后，建议使用官方释放空间",Icons.Outlined.AutoAwesome,onClick={vm.navigate("free-space")})}
             SectionLabel("诊断")
