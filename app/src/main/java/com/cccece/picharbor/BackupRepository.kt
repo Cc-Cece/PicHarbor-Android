@@ -35,9 +35,11 @@ class BackupRepository(private val graph:AppGraph) {
     /** Items that must be processed as single resources (live-photo stepwise fallback). */
     private val stepwiseItems=ConcurrentHashMap.newKeySet<String>()
     /** Latest per-item cleanup evidence, populated by [reconcile]; empty means "no evidence". */
-    @Volatile var lastCleanupEvidence:List<CleanupEvidenceItem>=emptyList()
+    @Volatile
+    var lastCleanupEvidence: List<CleanupEvidenceItem> = emptyList()
         private set
-    @Volatile var lastCleanupEvidenceAt:Long=0
+    @Volatile
+    var lastCleanupEvidenceAt: Long = 0
         private set
     val running get()=lock.isLocked
     val progress=MutableStateFlow(TransferProgress())
