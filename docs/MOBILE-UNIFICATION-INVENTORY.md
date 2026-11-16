@@ -28,7 +28,7 @@
 | 媒体扫描与索引（MediaStore + SAF 树） | `MediaRepository.scan/scanVolume/scanTree`、`Database.MediaEntry` | 稳定 | 媒体、权限 |
 | 手动选择文件导入 | `MediaRepository.importUris`、`HarborViewModel.importFiles` | 稳定 | 媒体、权限 |
 | 任务入队、去重（按内容记录匹配） | `BackupRepository.enqueue`、`Database.BackupPolicy.matches` | 稳定 | Room |
-| 普通照片经共享核心 | `HarborCore`（`harbor_core.dispatch_json` 适配器）+ `BackupRepository.process` 中新流程；旧直接调用路径保留为 fallback，注释 `deprecated-by-unification` | 实验（核心 `harbor_core.py` 尚未同步，见第 7 节） | Chaquopy |
+| 普通照片经共享核心 | `HarborCore`（`harbor_core.dispatch_json` 适配器）+ `BackupRepository.processSingleWithCore`；旧直接调用路径已在第二阶段删除，无 fallback（核心不可用时项目留队重试） | 实验（核心 `harbor_core.py` 已同步，见第 7 节；未实机验证） | Chaquopy |
 | 哈希、云端查重、上传、提交、相册归类 | `app/src/main/python/harbor_android.py: MobileService.process`（经 `Engine.call("process")`） | 稳定 | Chaquopy、网络 |
 | 上传进度回调与并发名额 | `EngineCallback`、`BackupRepository.run`（Semaphore） | 稳定 | 协程 |
 | 云端确认后才标记完成 | `BackupRepository.process`：commit 返回 remote_key 后才 `done`；`reconcile()` 定期核对云端缺失 | 稳定 | 网络 |
@@ -40,7 +40,13 @@
 | 相册归类（按文件夹/自定义/已有相册） | `Engine.call("albums")`、`harbor_android.py` 相册分支、`HarborViewModel.album(s)` | 稳定 | Chaquopy |
 | 画质（original/saver/quota） | `Preferences.quality`、`harbor_android.py` commit 参数 | 稳定 | Chaquopy |
 | 同名跳过（不计入清理资格） | `harbor_android.py` `same_name` 分支 → `filename_skipped` | 稳定 | Chaquopy |
-| 视频备份 | 与照片同一流程（`media.video` 区分，`videos` 开关，`mobile=="photos"` 时视频等 Wi-Fi） | 稳定 | 媒体 |
+| 视频备份 | 与照片同一核心流程（`media_kind=video`，asset 带 `duration_seconds`、`size`；`BackupRepository.processSingleWithCore`；原生传输与 WorkManager 适配保留） | 实验（核心 `harbor_core.py` 尚未同步，见第 7 节；未实机验证） | 媒体 |
+| Live Photo / 多资源 | `LivePhotoPairing`（同名干 + 同文件夹 + 5 秒内配对；Motion Photo 单文件 XMP 检测）；一个媒体项目一个核心任务（`media_kind=live_photo`，`asset.resources` 逐资源 `decide_prepare`）；默认原始照片配对联合提交，已有设置不被升级覆盖；核心不认 `live_photo` 时分步上传（每资源一个核心任务）；未验证的 Live Photo 只备份、不清理 | 实验（未实机验证） | 媒体、Chaquopy |
+| 批量任务 | `BackupRepository.pauseJobs/resumeJobs/cancelJobs`：批量创建（`enqueue`）、暂停/恢复/取消镜像到核心（`batch_pause`/`batch_resume`，入参 `{task_ids, tasks}`，逐项结果解析；核心未提供时逐任务 `transition` 回退）；暂停/恢复即时镜像，无“下次进入重同步”缺口 | 实验（核心新 action 待同步） | Chaquopy、Room、WorkManager |
+| 相册范围 | `ScopePolicy.evaluate`：范围走核心 `evaluate_scope`（scope 含 mode/albums/dateEnabled/from/to/photos/videos/ignoreSmallImages/minImageKb/filterCache，两端同义）；未知版本 scope 报错不退回全量（整批入队拒绝）；核心未提供时本地 `includes()` 回退 | 实验（核心新 action 待同步） | Chaquopy |
+| 资源复用 / 去重 | `decide_prepare`（`remote_key` 命中即 `content_exists` 跳过上传）是唯一去重决策；传输不再二次推导（`transportItem` 接 `lookup_fresh`/`lookup_remote_key`，`harbor_android.py` 跳过重复 `find_remote_media_by_hash`） | 实验（核心已同步；Python 适配器哈希已更新） | Chaquopy |
+| 代理 | `ProxyPolicy` + `CredentialStore` 代理凭据（Keystore AES-GCM）：配置/选择/路由走核心 `validate_proxy`（显式代理参数，默认关；凭据不进核心、不进日志）；TLS 校验保留（`session.verify=True`）；`Engine.connect` 透传代理 URL | 实验（核心新 action 待同步；未实机验证） | 安全存储、Chaquopy |
+| 电脑直连 LiveLink | `LiveLink` 门控：`livelink_handshake`（校验 scope2/catalog2 能力）与 `livelink_scope`（范围校验，`requires_confirmation:true`）；任何传输均需接收方确认；Live Photo 按一个媒体项目确认；失败/未知时关闭（不传输）。Android 尚无对端传输实现，门控通过后才可交由配对传输 | 实验（核心新 action 待同步；无对端传输实现） | Chaquopy |
 | 备份记录与统计 | `Database.BackupRecord/BackupJob/BackupItem/JobStatistics`、`HarborViewModel.report` | 稳定 | Room |
 
 ## 2. 账号与认证
@@ -61,8 +67,8 @@
 | 自建清理策略与风险确认 | 原 `CleanupPolicy`、`CleanupPolicyUi` | **已移除** | 含 `RISK_CONFIRMATION_REQUIRED` 确认语流程一并移除 |
 | 系统删除执行（MediaStore 删除授权 / SAF 删除 / Android 10 旧路径） | 原 `CleanupRepository.systemRequest/finishDelete/deleteLegacy`、`MainActivity.requestCleanup` | **已移除** | 不留删除后门；用户自选单项“从手机删除”（`MainActivity.requestLocalDelete`，系统回收站授权）与批量释放空间无关，予以保留，见第 6 节 |
 | 清理定时/后台触发与通知 | 原 `CleanupWorker`、`CleanupNotifications`、`CleanupRepository.schedule/restorePending` | **已移除** | 含 `AndroidManifest.xml` 中的 `CleanupCancelReceiver` 注册 |
-| 清理证据持久化 | 原 `Database.CleanupRecord/CleanupScan/CleanupScanItem` | **已移除调用，表保留只读兼容** | 读写 DAO 方法与仓库/UI 一并删除；三张表随 Room v4 schema 保留，不写入新数据、不恢复删除操作。旧清理记录的最终处置（只读保留 vs 随新版丢弃）是待决项（文档审阅 D1），留待 Yuto 早上决定；丢弃只需一次删除表的迁移 |
-| 云端确认证据（保留，供官方清理指引使用） | `harbor_android.py: verify_cleanup`（Python 侧，哈希锁定，`engine-extension.json` 校验，不可擅自改动）+ 新核心 `harbor_core.decide_cleanup`（待同步） | 稳定（证据函数）；实验（核心接入） | Chaquopy；证据标准：新鲜完整快照（协议层快照有效性 300 秒）、非回收站、原始画质、状态 100、原件可访问；核心 `decide_cleanup` 的“是否可指引官方清理”证据新鲜窗是冻结接口的 3600 秒，两者不要混淆 |
+| 清理证据持久化 | 原 `Database.CleanupRecord/CleanupScan/CleanupScanItem` | **已移除** | 三张表随 Room v5 迁移（`MIGRATION_4_5`）删除；备份记录、任务与项目表不受影响 |
+| 云端确认证据（保留，供官方清理指引使用） | `harbor_android.py: verify_cleanup`（Python 侧，哈希锁定，`engine-extension.json` 校验，不可擅自改动）+ 核心 `harbor_core.decide_cleanup`；逐项证据源已接：`BackupRepository.reconcile()` 产出 `lastCleanupEvidence`（`[{task_id, cloud_confirmed, confirmed_at}]`），`cleanupGuidanceEligible(itemId)` 要求逐项证据 + 核心同意才放行逐项，无证据时只做页级指引 | 稳定（证据函数）；实验（核心接入） | Chaquopy；证据标准：新鲜完整快照（协议层快照有效性 300 秒）、非回收站、原始画质、状态 100、原件可访问；核心 `decide_cleanup` 的“是否可指引官方清理”证据新鲜窗是冻结接口的 3600 秒，两者不要混淆 |
 | 官方释放空间指引 | 新增 `FreeSpaceGuide`：优先 `ACTION_VIEW` 打开已验证 Universal Link `https://photos.google.com/link/freeupspace`；失败回退：显式启动 Google 相册包 `com.google.android.apps.photos` → 未安装跳 Play 商店详情页 → 再失败给手动步骤文案；入口在 `FreeSpaceScreen`（设置/高级设置、个人页卡片、详情页） | 实验（Android 深链未实机验证，见下） | Intent、包管理器 |
 
 **深链验证状态（2026-11-13 核查）：** `https://photos.google.com/link/freeupspace`
@@ -99,11 +105,11 @@ Google 相册未安装/多账号时回退，均未实机验证，需实测后定
 | 顶部进行中状态条 | `TopStatusUi` | 稳定 | Compose |
 | 主题/动效 | `Theme`、`Motion` | 稳定 | Compose |
 
-## 6. 保留但与清理无关的删除能力（已确认范围）
+## 6. 已移除的删除能力（第二阶段决定，与“不自建删除”一致）
 
-| 功能 | 实现位置 | 状态 | 说明 |
+| 功能 | 原实现位置 | 状态 | 说明 |
 | --- | --- | --- | --- |
-| 用户自选单项从手机删除 | `MainActivity.requestLocalDelete/deleteSafLocals`、`SheetsUi` `delete-local` 表单、`DetailUi` 删除按钮 | 稳定 | 仅对用户在界面上明确选中的项目，经系统回收站/删除授权逐项处理；不是批量释放空间，不接核心、不走清理核验。如 Yuto 要求连此能力也移除，可单函数删除 |
+| 用户自选单项从手机删除 | 原 `MainActivity.requestLocalDelete/deleteSafLocals`、`SheetsUi` `delete-local` 表单、`DetailUi` 删除按钮、`MediaRepository.deleteUri` | **已移除** | 2026-11-13 第二阶段决定：与“不自建删除”一致，连单项本机删除也移除；释放空间只走 Google 相册官方功能（见第 3 节） |
 
 ## 7. 共享核心接入状态（本分支）
 
@@ -114,12 +120,20 @@ Google 相册未安装/多账号时回退，均未实机验证，需实测后定
   核心 `dedup_hit` → 本地 `exists`，`done` → `done`，`failed` → `failed`，
   `paused`/`waiting_network`/`interrupted` → `queued`（可重试），`cancelled` → `cancelled`。
   错误文案复用 `Engine.kt` 底部 `Messages.error(code)`。
-- **待同步（阻断项，见汇报）：** `~/workspace/picharbor/gpmc/gpmc/harbor_core.py`
-  在本分支工作时尚未存在，`tools/sync_gpmc.py --source ../gpmc` 无法执行；
-  `app/src/main/python/gpmc/harbor_core.py` 因此未生成。新流程代码按冻结接口编写，
-  以 `ENGINE_ERROR` 回退旧流程，待 gpmc 侧就绪后同步并做端到端验证。
-- 未迁移（阶段三范围）：批量任务以外的相册范围、视频、资源复用、代理与电脑直连、
-  Live Photo（实验能力，单独验收，不直接继承“已支持”结论）。
+- **已同步：** `app/src/main/python/gpmc/harbor_core.py` 已随 `tools/sync_gpmc.py`
+  同步并锁定（见 `gpmc.lock.json`，`tools/sync_gpmc.py --check` 通过），
+  阶段一的 9 个 action 可用；第二阶段新增的 6 个 action 尚未进入中央核心
+  快照，见下条。
+- 第二阶段新 action（`batch_pause`/`batch_resume`、`evaluate_scope`、
+  `validate_proxy`、`livelink_handshake`/`livelink_scope`、`migrate_legacy`
+  路由）同样尚未进入中央核心快照：Android 侧已按约定名调用，遇
+  `UNKNOWN_OPERATION` 时走文档化的本地回退（批量逐任务 `transition`、
+  范围本地 `includes()`、代理本地形状校验、LiveLink 关闭拒绝、迁移本地同义
+  映射），不崩溃、不伪造证据、不退回全量。`migrate_legacy` 另有说明：核心函数
+  已存在但未接入 `dispatch`，因此目前走本地映射。
+- 旧业务核心路径已删除（第二阶段）：`processLegacy` 改为纯传输适配器
+  `transportItem`，`process()` 不再回退旧路径；核心不可用时项目留队重试。
+  仅剩共享核心 + 原生 UI + 平台适配器。
 - 桌面端不在本次移动端统一范围内。
 
 ## 8. 构建与发布

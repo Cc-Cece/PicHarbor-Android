@@ -70,6 +70,7 @@ class MobileService:
         self.client = None
         self.credential = ""
         self.account = ""
+        self.proxy = ""
         self.full_snapshot_id = ""
         self.full_snapshot_at = 0.0
         self.connection_lock = threading.RLock()
@@ -140,17 +141,25 @@ class MobileService:
                 else: self.active_operations -= 1
                 self.lifecycle.notify_all()
 
-    def connect(self, credential, timeout=60):
+    def connect(self, credential, timeout=60, proxy=""):
+        """Connect with an explicit proxy ("" = direct, the default).
+
+        The proxy URL may carry credentials; it is held in memory only, is
+        never logged, and TLS verification stays on (session.verify = True
+        in MobileApi._new_session). A changed proxy rebuilds the client so
+        a stale session is never reused.
+        """
         with diag.observed_lock(self.connection_lock, "connection_lock"):
-            if self.client is None or self.credential != credential:
+            if self.client is None or self.credential != credential or self.proxy != proxy:
                 self.client = None
-                client = Client(auth_data=credential, timeout=timeout, log_level="CRITICAL")
-                api = MobileApi(client.auth_data, language=client.language, timeout=timeout)
+                client = Client(auth_data=credential, timeout=timeout, log_level="CRITICAL", proxy=proxy)
+                api = MobileApi(client.auth_data, language=client.language, timeout=timeout, proxy=proxy)
                 _ = api.bearer_token
                 client.api = api
                 diag.install_api(api)
                 self.client = client
                 self.credential = client.auth_data
+                self.proxy = proxy
                 self.account = parse_email(client.auth_data).strip().lower()
                 self.full_snapshot_id = ""
                 self.full_snapshot_at = 0.0
@@ -220,7 +229,13 @@ class MobileService:
                 return {**result, "state": "failed", "error": "SOURCE_CHANGED"}
             with diag.observed_lock(self.content_locks[int(digest["sha1"][:8],16) % len(self.content_locks)], "content_lock"):
                 self.emit(callback, "checking", 0, digest["size"])
-                remote = self.client.api.find_remote_media_by_hash(bytes.fromhex(digest["sha1"]))
+                if item.get("lookup_fresh"):
+                    # The core flow already looked this content up (lookup ->
+                    # decide_prepare); that result is authoritative and is
+                    # not derived a second time here. "" means "not found".
+                    remote = item.get("lookup_remote_key") or None
+                else:
+                    remote = self.client.api.find_remote_media_by_hash(bytes.fromhex(digest["sha1"]))
                 if remote:
                     result.update(remote_key=remote, origin=result["origin"] or "content_exists")
                 elif item.get("remote_key"):
@@ -502,7 +517,7 @@ class MobileService:
                     with diag.observed_lock(self.connection_lock, "connection_lock"):
                         self.client = None; self.credential = ""; self.account = ""
                     return json.dumps({"ok": True})
-                if action == "connect": return json.dumps({"ok": True, **self.connect(values["credential"], values.get("timeout",60))})
+                if action == "connect": return json.dumps({"ok": True, **self.connect(values["credential"], values.get("timeout",60), values.get("proxy", ""))})
                 if self.client is None: return json.dumps({"ok": False, "error": "LOGIN_REQUIRED"})
                 if values.get("_account", self.account) != self.account:
                     return json.dumps({"ok": False, "error": "ACCOUNT_CHANGED"})

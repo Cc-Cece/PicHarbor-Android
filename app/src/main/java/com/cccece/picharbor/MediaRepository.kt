@@ -119,17 +119,6 @@ class MediaRepository(private val context: Context, private val dao: HarborDao, 
         } else DocumentFile.fromSingleUri(context,Uri.parse(media.id))?.takeIf{it.exists()&&it.canRead()}?.let { it.length() to it.lastModified() }
     } catch (_:Exception){null}
     fun accessible(media:MediaEntry)=runCatching { context.contentResolver.openFileDescriptor(Uri.parse(media.id),"r")?.use { true }?:false }.getOrDefault(false)
-    /** System delete/trash consent accepts image/video item URIs, not the Files index URI. */
-    suspend fun deleteUri(media:MediaEntry):Uri=withContext(Dispatchers.IO) {
-        val original=Uri.parse(media.id)
-        require(original.authority==MediaStore.AUTHORITY)
-        var volume=original.pathSegments.first()
-        context.contentResolver.query(original,arrayOf(MediaStore.MediaColumns.VOLUME_NAME),null,null,null)?.use {
-            if(it.moveToFirst())volume=it.getString(0)?:volume
-        }
-        val collection=if(media.video)MediaStore.Video.Media.getContentUri(volume) else MediaStore.Images.Media.getContentUri(volume)
-        ContentUris.withAppendedId(collection,ContentUris.parseId(original))
-    }
     fun presence(id:String):Boolean?=try {
         context.contentResolver.query(Uri.parse(id),arrayOf(OpenableColumns.DISPLAY_NAME),null,null,null)?.use{it.moveToFirst()}
     } catch (_:SecurityException){null} catch (_:java.io.FileNotFoundException){false} catch (_:Exception){null}

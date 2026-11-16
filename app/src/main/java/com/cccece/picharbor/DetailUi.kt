@@ -35,7 +35,7 @@ fun DetailScreen(vm:HarborViewModel,data:HarborUiData) {
     val media=vm.activeMedia?:return
     val status=data.status(media)
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        PageTitle("",vm,action={IconButton(onClick={vm.selectAll(listOf(media.id));vm.sheet="delete-local"}){Icon(Icons.Outlined.DeleteOutline,"从手机删除")}})
+        PageTitle("",vm)
         if(media.video)VideoPlayer(media.id) else {
             var scale by remember(media.id){mutableFloatStateOf(1f)}
             var x by remember(media.id){mutableFloatStateOf(0f)};var y by remember(media.id){mutableFloatStateOf(0f)}

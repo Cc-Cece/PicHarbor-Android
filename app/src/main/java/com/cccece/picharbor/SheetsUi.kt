@@ -25,12 +25,18 @@ fun Choice(label:String,checked:Boolean,description:String="",onClick:()->Unit) 
     }
 }
 @Composable
-fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onLocalDelete:()->Unit,onPickTree:()->Unit) {
+fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onPickTree:()->Unit) {
     val context=LocalContext.current
     val accounts by vm.accounts.collectAsState()
     val mode=vm.sheet
     if(mode.isEmpty())return
     var input by remember(mode){mutableStateOf(if(mode=="time")data.settings.time else "")}
+    var proxyEnabled by remember(mode){mutableStateOf(data.settings.proxyEnabled)}
+    var proxyScheme by remember(mode){mutableStateOf(data.settings.proxyScheme)}
+    var proxyHost by remember(mode){mutableStateOf(data.settings.proxyHost)}
+    var proxyPort by remember(mode){mutableStateOf(if(data.settings.proxyPort>0)data.settings.proxyPort.toString() else "")}
+    var proxyUser by remember(mode){mutableStateOf(data.settings.proxyUser)}
+    var proxyPassword by remember(mode){mutableStateOf("")}
     var dateDialog by remember(mode){mutableStateOf(false)}
     val dates=rememberDateRangePickerState()
     if(dateDialog)DatePickerDialog(onDismissRequest={dateDialog=false},confirmButton={TextButton(onClick={
@@ -44,6 +50,8 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onLocalDe
         mode.startsWith("remove-account:")->"移除账号？"
         mode=="appearance"->"外观"
         mode=="quality"->"备份画质"
+        mode=="live-photo"->"实况照片配对"
+        mode=="proxy"->"代理"
         mode=="album"->"相册归类"
         mode=="custom-album"->"自定义相册"
         mode=="albums"->"选择已有相册"
@@ -57,7 +65,6 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onLocalDe
         mode=="about"->"关于 PicHarbor"
         mode=="concurrency"->"同时上传数量"
         mode=="timeout"->"连接超时"
-        mode=="delete-local"->"从手机删除？"
         mode.startsWith("job:")->"任务详情"
         mode.startsWith("end:")->"结束当前任务？"
         else->"PicHarbor"
@@ -104,6 +111,21 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onLocalDe
                     Choice("节省空间",data.settings.quality=="saver","可能压缩照片和视频"){vm.setString("quality","saver")}
                     Choice("原始画质（计入配额）",data.settings.quality=="quota","使用 Google 账号存储空间"){vm.setString("quality","quota")}
                     Helper("存储空间是否计入配额，以 Google 相册实际处理结果为准。")
+                }
+                mode=="live-photo"->{
+                    Choice("原始照片配对（联合提交）",data.settings.livePhotoPairing=="original","照片与视频配对，按一个媒体项目备份并一次确认"){vm.setString("livePhotoPairing","original")}
+                    Choice("Motion Photo（单文件）",data.settings.livePhotoPairing=="motion","单个文件内嵌动态视频，按单文件备份"){vm.setString("livePhotoPairing","motion")}
+                    Helper("已有设置不会被升级覆盖；未确认的实况照片只备份、不清理本机原件。")
+                }
+                mode=="proxy"->{
+                    Row(verticalAlignment=Alignment.CenterVertically){Text("启用代理",modifier=Modifier.weight(1f));Switch(proxyEnabled,{proxyEnabled=it},enabled=!vm.busy)}
+                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){listOf("http" to "HTTP","https" to "HTTPS").forEach{(key,label)->FilterChip(proxyScheme==key,{proxyScheme=key},{Text(label)},enabled=proxyEnabled&&!vm.busy)}}
+                    OutlinedTextField(proxyHost,{proxyHost=it.take(253)},label={Text("代理地址")},singleLine=true,enabled=proxyEnabled&&!vm.busy,modifier=Modifier.fillMaxWidth())
+                    OutlinedTextField(proxyPort,{proxyPort=it.filter{c->c.isDigit()}.take(5)},label={Text("端口")},singleLine=true,enabled=proxyEnabled&&!vm.busy,modifier=Modifier.fillMaxWidth())
+                    OutlinedTextField(proxyUser,{proxyUser=it.take(128)},label={Text("账号（可选）")},singleLine=true,enabled=proxyEnabled&&!vm.busy,modifier=Modifier.fillMaxWidth())
+                    OutlinedTextField(proxyPassword,{proxyPassword=it.take(256)},label={Text("密码（可选，留空不改）")},singleLine=true,enabled=proxyEnabled&&!vm.busy,modifier=Modifier.fillMaxWidth(),visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation())
+                    Helper("默认关闭。密码只保存在本机安全存储，不会进入共享核心或日志；TLS 校验始终保留。")
+                    Button(onClick={vm.setProxy(proxyEnabled,proxyScheme,proxyHost,proxyPort.toIntOrNull()?:0,proxyUser,proxyPassword)},enabled=!vm.busy,modifier=Modifier.fillMaxWidth()){Text("保存")}
                 }
                 mode=="album"->{
                     listOf("none" to "不分类","folder" to "按来源文件夹").forEach{(key,label)->Choice(label,data.settings.albumMode==key){vm.album(key)}}
@@ -155,14 +177,6 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onLocalDe
                 }
                 mode=="concurrency"->{(1..3).forEach{n->Choice(if(n==2)"2 个（默认）" else "$n 个",data.settings.concurrency==n){vm.setInteger("concurrency",n)}}}
                 mode=="timeout"->{listOf(30,60,120).forEach{n->Choice("$n 秒",data.settings.timeout==n){vm.setInteger("timeout",n)}}}
-                mode=="delete-local"->{
-                    val local=data.media.filter{it.id in vm.selected}
-                    Text("将从手机处理 ${local.size.coerceAtMost(100)} 个项目，云端备份不受影响。")
-                    if(local.any{!data.backed(it)})Text("其中有尚未确认备份的内容，删除后可能无法找回。",color=MaterialTheme.colorScheme.error)
-                    Helper("支持的系统媒体会先移入手机回收站；其他文件夹中的文件可能直接移除。")
-                    Button(onClick=onLocalDelete,enabled=local.isNotEmpty()&&!vm.busy,modifier=Modifier.fillMaxWidth()){Text("继续从手机删除")}
-                    TextButton(onClick={vm.sheet=""}){Text("保留")}
-                }
                 mode.startsWith("end:")->{
                     Text("保留已成功备份的内容与历史记录，结束尚未完成的部分。不会删除手机或云端照片。")
                     Button(onClick={vm.end(mode.substringAfter(':'));vm.sheet=""},enabled=!vm.busy,modifier=Modifier.fillMaxWidth()){Text("结束任务")}

@@ -91,6 +91,28 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
         graph.removeAccount(email);loginRequired=false;sheet="";clearSelection();message="已从此设备移除账号，云端内容保留"
         withContext(Dispatchers.Main){android.webkit.CookieManager.getInstance().removeAllCookies(null);android.webkit.WebStorage.getInstance().deleteAllData()}
     }
+    fun setProxy(enabled:Boolean,scheme:String,host:String,port:Int,username:String,password:String)=action {
+        val config=ProxyConfig(enabled,scheme.lowercase(),host.trim(),port,username.trim())
+        if(enabled) {
+            when(val validation=ProxyPolicy.validate(graph.harborCore,config)) {
+                ProxyPolicy.Validation.Valid -> {}
+                is ProxyPolicy.Validation.Invalid -> {
+                    // The core reports INVALID_PROXY; the UI wording lives
+                    // under PROXY_INVALID (plus the TLS-specific message).
+                    val code=if(validation.error=="INVALID_PROXY")"PROXY_INVALID" else validation.error
+                    message="代理设置无效：${Messages.error(code)}"; return@action
+                }
+            }
+        }
+        graph.preferences.boolean("proxyEnabled",enabled)
+        graph.preferences.string("proxyScheme",config.scheme)
+        graph.preferences.string("proxyHost",config.host)
+        graph.preferences.integer("proxyPort",config.port)
+        graph.preferences.string("proxyUser",config.username)
+        if(password.isNotEmpty())graph.credentials.saveProxyCredential(password)
+        message=if(enabled)"代理设置已保存" else "代理已关闭"
+        sheet=""
+    }
     fun setBoolean(key:String,value:Boolean)=action {
         graph.preferences.boolean(key,value);graph.scheduler.configure()
     }

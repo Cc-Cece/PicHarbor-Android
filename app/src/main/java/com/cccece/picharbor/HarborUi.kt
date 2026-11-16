@@ -71,7 +71,7 @@ data class HarborUiData(val settings:HarborSettings,val media:List<MediaEntry>,v
 }
 
 @Composable
-fun HarborRoot(vm:HarborViewModel,onLogin:()->Unit,onPermissions:()->Unit,onPickFiles:()->Unit,onPickTree:()->Unit,onLocalDelete:()->Unit,onExport:()->Unit) {
+fun HarborRoot(vm:HarborViewModel,onLogin:()->Unit,onPermissions:()->Unit,onPickFiles:()->Unit,onPickTree:()->Unit,onExport:()->Unit) {
     val settings by vm.settings.collectAsState()
     val media by vm.media.collectAsState();val records by vm.records.collectAsState();val jobs by vm.jobs.collectAsState()
     val items by vm.items.collectAsState()
@@ -148,7 +148,7 @@ fun HarborRoot(vm:HarborViewModel,onLogin:()->Unit,onPermissions:()->Unit,onPick
           }
             SnackbarHost(snackbar,Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom=if(vm.page in setOf("photos","backup","me"))80.dp else 0.dp))
         }
-        HarborSheets(vm,data,onLogin,onLocalDelete,onPickTree)
+        HarborSheets(vm,data,onLogin,onPickTree)
     }
 }
 
@@ -262,7 +262,6 @@ fun PhotosScreen(vm:HarborViewModel,data:HarborUiData,onPermissions:()->Unit,onP
           Surface(color=MaterialTheme.colorScheme.surfaceContainerHigh,shape=RoundedCornerShape(30.dp),shadowElevation=6.dp){
             Row(Modifier.horizontalScroll(rememberScrollState()).padding(8.dp),horizontalArrangement=Arrangement.spacedBy(6.dp)){
                 Button(onClick={vm.start(vm.selected.toList())},enabled=vm.selected.isNotEmpty()&&!vm.busy){Icon(Icons.Outlined.CloudUpload,null);Spacer(Modifier.width(7.dp));Text("备份所选")}
-                TextButton(onClick={vm.sheet="delete-local"},enabled=vm.selected.isNotEmpty()&&!vm.busy){Icon(Icons.Outlined.DeleteOutline,null);Spacer(Modifier.width(5.dp));Text("从手机删除")}
             }
           }
         }

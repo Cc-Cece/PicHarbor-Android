@@ -33,31 +33,7 @@ data class BackupItem(
     val origin: String = "", val error: String = "", val attempt: Int = 0
 )
 
-@Entity(tableName = "cleanups", indices = [Index("account")])
-// Retained for read compatibility only. Self-built cleanup was removed
-// 2026-11-13 (REQUIREMENTS.md 2026-10-19; Yuto decision): no code writes
-// these tables any more and no delete may be driven from them. Whether to
-// drop them in a future migration is still undecided (doc-review D1).
-data class CleanupRecord(
-    @PrimaryKey val id: String, val account: String, val mediaId: String, val bytes: Long,
-    val sha256: String, val remoteKey: String, val checkedAt: Long, val state: String,
-    val reason: String = "", val deletedAt: Long = 0,
-    @ColumnInfo(defaultValue="'full'") val policy:String="full",
-    @ColumnInfo(defaultValue="''") val scanId:String=""
-)
-
 data class JobStatistics(val jobId:String,val total:Int,val succeeded:Int,val failed:Int,val skipped:Int,val bytes:Long,val finished:Int=0)
-
-@Entity(tableName="cleanup_scans",indices=[Index("account")])
-data class CleanupScan(@PrimaryKey val id:String,val account:String,val created:Long,
-    val state:String="queued",val checked:Int=0,val total:Int=0,val completedAt:Long=0,val error:String="",
-    @ColumnInfo(defaultValue="'full'") val mode:String="full",
-    @ColumnInfo(defaultValue="'{}'") val metrics:String="{}",
-    @ColumnInfo(defaultValue="0") val elapsedMs:Long=0,
-    @ColumnInfo(defaultValue="2") val effectiveParallel:Int=2,
-    @ColumnInfo(defaultValue="'full'") val policy:String="full")
-@Entity(tableName="cleanup_scan_items",primaryKeys=["scanId","mediaId"],indices=[Index("scanId")])
-data class CleanupScanItem(val scanId:String,val mediaId:String,val done:Boolean=false)
 
 @Dao
 interface HarborDao {
@@ -91,13 +67,15 @@ interface HarborDao {
     @Query("SELECT COUNT(*) FROM items i JOIN jobs j ON i.jobId=j.id WHERE i.account=:account AND i.mediaId=:mediaId AND j.state IN ('queued','running','waiting','paused','pausing') AND i.state NOT IN ('failed','cancelled','filename_skipped')") suspend fun activeCount(account: String, mediaId: String): Int
     @Query("SELECT i.* FROM items i JOIN jobs j ON i.jobId=j.id WHERE i.account=:account AND i.mediaId=:mediaId AND j.state IN ('queued','running','waiting','paused','pausing','auth_required') AND i.state IN ('queued','hashing','checking','uploading','finalizing','finalizing_album','album_pending') LIMIT 1") suspend fun activeItem(account:String,mediaId:String):BackupItem?
     @Query("SELECT * FROM items WHERE id IN (:ids)") fun observeItems(ids:List<String>):Flow<List<BackupItem>>
+    /** Latest done/exists item for a media id, used to attach reconcile evidence to a core task id. */
+    @Query("SELECT * FROM items WHERE account=:account AND mediaId=:mediaId AND state IN ('done','exists') ORDER BY rowid DESC LIMIT 1") suspend fun latestDoneItem(account:String,mediaId:String):BackupItem?
     @Query("SELECT COUNT(*) FROM jobs WHERE account=:account AND automatic=0 AND state IN ('queued','running','waiting')") suspend fun pendingManual(account:String):Int
     @Query("UPDATE jobs SET state='paused' WHERE account=:account AND state IN ('queued','running','waiting','pausing')") suspend fun pauseAccountJobs(account:String)
     @Upsert suspend fun putItems(items: List<BackupItem>)
     @Upsert suspend fun putItem(item: BackupItem)
 }
 
-@Database(entities = [MediaEntry::class, BackupRecord::class, BackupJob::class, BackupItem::class, CleanupRecord::class,CleanupScan::class,CleanupScanItem::class], version = 4, exportSchema = true)
+@Database(entities = [MediaEntry::class, BackupRecord::class, BackupJob::class, BackupItem::class], version = 5, exportSchema = true)
 abstract class HarborDatabase : RoomDatabase() {
     abstract fun dao(): HarborDao
     companion object {
@@ -126,7 +104,18 @@ abstract class HarborDatabase : RoomDatabase() {
                 db.execSQL("UPDATE cleanups SET state='expired',reason='RECHECK_REQUIRED' WHERE state='ready'")
             }
         }
-        fun open(context: Context) = Room.databaseBuilder(context, HarborDatabase::class.java, "picharbor.db").addMigrations(MIGRATION_1_2,MIGRATION_2_3,MIGRATION_3_4).build()
+        val MIGRATION_4_5=object:androidx.room.migration.Migration(4,5) {
+            override fun migrate(db:androidx.sqlite.db.SupportSQLiteDatabase) {
+                // Stage-two decision (§8/D1): the old self-built cleanup
+                // tables go away with the feature they served. The migration
+                // itself only runs when the app opens the database (code
+                // level here); backup records, jobs and items are untouched.
+                db.execSQL("DROP TABLE IF EXISTS cleanup_scan_items")
+                db.execSQL("DROP TABLE IF EXISTS cleanup_scans")
+                db.execSQL("DROP TABLE IF EXISTS cleanups")
+            }
+        }
+        fun open(context: Context) = Room.databaseBuilder(context, HarborDatabase::class.java, "picharbor.db").addMigrations(MIGRATION_1_2,MIGRATION_2_3,MIGRATION_3_4,MIGRATION_4_5).build()
     }
 }
 

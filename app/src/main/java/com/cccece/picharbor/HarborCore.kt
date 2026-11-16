@@ -34,10 +34,21 @@ object HarborCoreState {
  * restart can recover them with store_load.
  *
  * When the core module is absent or a call fails, dispatch returns
- * {"ok": false, "error": "ENGINE_ERROR"} and the caller falls back to the
- * legacy direct-call path (marked deprecated-by-unification at the call
- * site). The core module is resolved as `gpmc.harbor_core` (the sync target
- * of tools/sync_gpmc.py) with a top-level `harbor_core` fallback.
+ * {"ok": false, "error": "ENGINE_ERROR"} and the caller does NOT fall back
+ * to a second business implementation: there is exactly one business core
+ * (stage two removed the legacy direct-call fallback). Callers treat an
+ * unavailable core as a retryable failure (item stays queued / job waits)
+ * rather than deciding business rules locally.
+ *
+ * New stage-two actions (batch_pause, batch_resume, evaluate_scope,
+ * validate_proxy, livelink_handshake, livelink_scope, migrate_legacy) may
+ * not exist yet in the synced core snapshot: the central gpmc core is being
+ * extended in parallel. Every wrapper below therefore treats
+ * {"ok": false, "error": "UNKNOWN_OPERATION"} as "core does not know this
+ * action yet" and applies the documented local fallback (never a crash,
+ * never a silent full-scope grant, never invented evidence). See
+ * [isUnknownOperation]. The core module is resolved as `gpmc.harbor_core`
+ * (the sync target of tools/sync_gpmc.py) with a top-level `harbor_core` fallback.
  * Error text for the UI reuses Messages.error(code) from Engine.kt.
  */
 class HarborCore(private val storePath: String = "") {
@@ -132,6 +143,17 @@ class HarborCore(private val storePath: String = "") {
     }
 
     /**
+     * Per-resource dedup decision for a multi-resource asset (Live Photo /
+     * Motion Photo): one call with the asset (including "resources") and
+     * [remoteKeys] keyed by role ({"photo": key, "video": key}; absent keys
+     * mean "not found"). The core answers {"exists": all, "resources":
+     * [{role, exists, remote_key?}]}. A single remote_key must NOT be sent
+     * together with resources (the core rejects it as INVALID_ARGUMENT).
+     */
+    suspend fun decidePrepare(asset: JSONObject, remoteKeys: JSONObject): JSONObject =
+        dispatch("decide_prepare", JSONObject().put("asset", asset).put("remote_keys", remoteKeys))
+
+    /**
      * decide_cleanup judges only whether the cloud-confirmation evidence is
      * sufficient to guide the user to Google Photos' official free-up-space.
      * It is NOT a permit to delete local originals: PicHarbor no longer
@@ -139,7 +161,14 @@ class HarborCore(private val storePath: String = "") {
      * 2026-11-13). The core must never treat its result as delete approval.
      * Evidence needs cloud_state and checked_at (epoch seconds, fresh within
      * 3600 s) plus a bool policy; only cloud_state == "confirmed_original"
-     * with policy allowed returns {"eligible": true}.
+     * with policy allowed returns {"eligible": true}. Stage two adds an
+     * optional "items" array to the evidence
+     * ([{task_id, cloud_confirmed, confirmed_at}] taken from reconcile /
+     * cloud-confirmation results); the Kotlin caller additionally requires
+     * the queried task to appear in that array with cloud_confirmed=true —
+     * without such an item there is no per-item release, only page-level
+     * guidance. Evidence is never invented: a missing item means "not
+     * eligible", not "assume confirmed".
      */
     suspend fun decideCleanup(task: JSONObject, evidence: JSONObject): JSONObject =
         dispatch("decide_cleanup", JSONObject().put("task", task).put("evidence", evidence))
@@ -177,6 +206,78 @@ class HarborCore(private val storePath: String = "") {
 
     suspend fun capabilities(): JSONObject = dispatch("capabilities")
 
+    /** True when the core answered that it does not know this action yet. */
+    fun isUnknownOperation(result: JSONObject): Boolean =
+        !result.optBoolean("ok") && result.optString("error") == "UNKNOWN_OPERATION"
+
+    /**
+     * Batch pause / resume. Input is {task_ids, tasks} per the stage-two
+     * core contract; the result carries per-task outcomes (a "results"
+     * array or a "tasks" object, each entry with ok/state/error). Returns
+     * the raw core result; callers parse it with [parseBatchResults] and
+     * must keep going when individual tasks fail (a partial mirror never
+     * blocks the local pause/resume). UNKNOWN_OPERATION means the synced
+     * core predates the batch actions: callers then mirror per task with
+     * [transition] instead.
+     */
+    suspend fun batchPause(taskIds: List<String>, tasks: JSONObject): JSONObject =
+        dispatch("batch_pause", JSONObject().put("task_ids", org.json.JSONArray(taskIds)).put("tasks", tasks))
+
+    suspend fun batchResume(taskIds: List<String>, tasks: JSONObject): JSONObject =
+        dispatch("batch_resume", JSONObject().put("task_ids", org.json.JSONArray(taskIds)).put("tasks", tasks))
+
+    /**
+     * Scope evaluation for one asset against the backup scope. The scope
+     * dict is built by ScopePolicy (mode/albums/dateEnabled/from/to/
+     * photos/videos/ignoreSmallImages/minImageKb/filterCache) and means the
+     * same on both clients. Returns the raw core result, expected to carry
+     * {"included": true/false}. Callers must NOT treat an unknown-version
+     * scope error as "include everything": see ScopePolicy.
+     */
+    suspend fun evaluateScope(scope: JSONObject, asset: JSONObject): JSONObject =
+        dispatch("evaluate_scope", JSONObject().put("scope", scope).put("asset", asset))
+
+    /**
+     * Proxy validation. Only explicit, non-secret proxy parameters are sent
+     * (enabled/scheme/host/port/username); credentials never enter the core
+     * and never enter logs — they live in CredentialStore and are only
+     * handed to the engine session in memory. UNKNOWN_OPERATION falls back
+     * to the local shape check in ProxyPolicy.
+     */
+    suspend fun validateProxy(proxy: JSONObject): JSONObject =
+        dispatch("validate_proxy", proxy)
+
+    /**
+     * LiveLink (paired backup) handshake: checks the peer supports the
+     * scope2/catalog2 capabilities. UNKNOWN_OPERATION means the core (or
+     * the peer path) does not know LiveLink yet: callers fail closed and
+     * refuse transfers rather than assuming support.
+     */
+    suspend fun livelinkHandshake(capabilities: List<String> = listOf("scope2", "catalog2")): JSONObject =
+        dispatch("livelink_handshake", JSONObject().put("capabilities", org.json.JSONArray(capabilities)))
+
+    /**
+     * LiveLink scope check for one transfer. The core answers whether the
+     * scoped transfer requires receiver confirmation; per the paired-backup
+     * contract every transfer requires confirmation (requires_confirmation
+     * is true), and a Live Photo counts as a single media item.
+     */
+    suspend fun livelinkScope(scope: JSONObject, asset: JSONObject): JSONObject =
+        dispatch("livelink_scope", JSONObject().put("scope", scope).put("asset", asset))
+
+    /**
+     * Legacy migration. The core action exists as a function in harbor_core
+     * but may not be routed by dispatch yet; UNKNOWN_OPERATION is expected
+     * until the central core wires it, and LegacyMigration then applies the
+     * identical mapping locally. Never deletes or mutates source records.
+     */
+    suspend fun migrateLegacy(records: org.json.JSONArray): JSONObject =
+        dispatch("migrate_legacy", JSONObject().put("records", records))
+
+    /** Persists [tasks] to an explicit store file (used for the migrated copy). */
+    suspend fun storeSaveTo(path: String, tasks: JSONObject): JSONObject =
+        dispatch("store_save", JSONObject().put("path", path).put("tasks", tasks))
+
     /**
      * Best-effort mirror of a task event into the core log. The core only
      * redacts the event dict and returns the redacted copy (it writes
@@ -212,5 +313,40 @@ class HarborCore(private val storePath: String = "") {
 
         /** decide_prepare reports a hit as {"exists": true, ...}. */
         fun isDedupHit(result: JSONObject): Boolean = result.optBoolean("exists")
+
+        /**
+         * Parses a batch_pause / batch_resume result into per-task outcomes.
+         * Accepts a "results" array ([{task_id, ok, state, error}]) or a
+         * "tasks" object ({task_id: {ok, state, error} / task dict}). Unknown
+         * shapes yield an empty map; callers treat a missing entry as
+         * "not mirrored, keep local state and log it", never as success.
+         */
+        fun parseBatchResults(result: JSONObject): Map<String, JSONObject> {
+            val out = mutableMapOf<String, JSONObject>()
+            if (!result.optBoolean("ok")) return out
+            val array = result.optJSONArray("results")
+            if (array != null) {
+                for (i in 0 until array.length()) {
+                    val entry = array.optJSONObject(i) ?: continue
+                    val id = entry.optString("task_id")
+                    if (id.isNotEmpty()) out[id] = entry
+                }
+                return out
+            }
+            val tasks = result.optJSONObject("tasks") ?: return out
+            val keys = tasks.keys()
+            while (keys.hasNext()) {
+                val id = keys.next()
+                tasks.optJSONObject(id)?.let { out[id] = it }
+            }
+            return out
+        }
+
+        /** Scope errors that must never degrade into "include everything". */
+        fun isUnknownScopeVersion(result: JSONObject): Boolean =
+            !result.optBoolean("ok") && result.optString("error") in setOf(
+                "UNKNOWN_SCOPE_VERSION", "INVALID_SCOPE", "UNSUPPORTED_SCOPE_VERSION",
+                "SCOPE_VERSION_UNSUPPORTED"
+            )
     }
 }

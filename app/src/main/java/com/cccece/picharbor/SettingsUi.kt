@@ -36,6 +36,7 @@ fun SettingsScreen(vm:HarborViewModel,data:HarborUiData) {
             SettingGroup {
                 SettingsRow("备份文件夹",if(s.allFolders)"所有文件夹 · 自动包含新文件夹" else "选择想自动备份的内容",Icons.Outlined.Folder,onClick={vm.navigate("folders")})
                 ToggleRow("备份视频","照片之外，也保存精彩片段",s.videos,Icons.Outlined.VideoLibrary,!vm.busy){vm.setBoolean("videos",it)}
+                SettingsRow("实况照片配对",livePhotoLabel(s.livePhotoPairing),Icons.Outlined.Image,onClick={vm.sheet="live-photo"})
                 SettingsRow("相册归类",albumLabel(s),Icons.Outlined.Collections,onClick={vm.sheet="album"})
             }
             SectionLabel("备份时机")
@@ -50,6 +51,7 @@ fun SettingsScreen(vm:HarborViewModel,data:HarborUiData) {
     }
 }
 fun qualityName(value:String)=when(value){"unknown"->"待确认";"saver"->"节省空间";"quota"->"原始画质（计入 Google 存储空间）";else->"原始画质"}
+fun livePhotoLabel(value:String)=when(value){"motion"->"Motion Photo（单文件）";else->"原始照片配对（联合提交）"}
 fun albumLabel(s:HarborSettings)=when(s.albumMode){"none"->"不分类";"custom"->"自定义：${s.albumValue}";"existing"->"加入已选择的云端相册";else->"按来源文件夹"}
 
 @Composable
@@ -115,6 +117,8 @@ fun AdvancedScreen(vm:HarborViewModel,data:HarborUiData,onExport:()->Unit) {
                 ToggleRow("失败后自动重试","网络失败最多重试 3 次",data.settings.retries>0,Icons.Outlined.Refresh,!vm.busy){vm.setInteger("retries",if(it)3 else 0)}
                 ToggleRow("自动备份跳过云端同名文件","手动选中仍会核对内容；同名跳过不代表已确认备份",data.settings.sameName,Icons.Outlined.ContentCopy,!vm.busy){vm.setBoolean("sameName",it)}
             }
+            SectionLabel("网络代理")
+            SettingGroup {SettingsRow("代理",if(s.proxyEnabled)"已启用：${s.proxyScheme}://${s.proxyHost}:${s.proxyPort}" else "未启用（默认直连）",Icons.Outlined.Public,onClick={vm.sheet="proxy"})}
             SectionLabel("释放手机空间")
             SettingGroup {SettingsRow("在 Google 相册释放空间","PicHarbor 不删除本机文件；仅云端确认备份后，建议使用官方释放空间",Icons.Outlined.AutoAwesome,onClick={vm.navigate("free-space")})}
             SectionLabel("诊断")

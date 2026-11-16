@@ -85,3 +85,23 @@ gh workflow run release.yml --repo Cc-Cece/PicHarbor-Android --ref feat/android-
   上传路径与非法边拒绝、retry_delay、store 往返与 interrupted 恢复、
   log_event 脱敏（脚本在 /tmp，未入仓）。Kotlin 未本地编译（本机无 Java），
   需 CI/实机验证；核心集成未做端到端实测（无真实账号/设备）。
+
+## UNIFICATION-OVERNIGHT-2026-11-13：总协调复核（2026-11-13 凌晨）
+
+日期：2026-11-13。范围：共享核心（gpmc）、Android、iOS、文档审阅四路完成后的总协调复核与交接。
+完整交接见本地 `~/workspace/picharbor/HANDOVER-2026-11-13.md`。
+
+- 复核通过：gpmc 目标测试 65 项通过；iOS `tests_python/` 84 项通过；Android `test_diagnostics.py` 4 项通过；`verify_engine.py` 与两端 `sync_gpmc.py --check` 均 PASS；快照与中央库逐字节一致。
+- 推送状态（01:35 前）：gpmc 远程 `f479526`、iOS 远程 `fbd7592` 内容与本地一致；Android 远程头 `d6a71886`，只差 1 个文件未删（`app/src/test/java/com/cccece/picharbor/CleanupPolicyTest.kt`，其删除批准卡被 01:35 紧急叫停打断，01:36 复查待批列表已为空）。01:35 之后零 GitHub 写操作、零 CI 触发。
+- CI 未跑：Kotlin 与 Swift 从未本地编译（本机无 Java、无 Xcode），必须经 GitHub Actions 验证后才可合并。早上先删远程残留的 1 个文件，再跑 CI。
+- 选型（已定，依据见交接 §3）：共享核心为 Python（gpmc.harbor_core），不用 KMP；仓库保持中央库+快照，不建单仓；清理交由 Google 相册官方，核心与两端均不含删除能力。
+
+## UNIFICATION-STAGE2-2026-11-13：第二阶段（2026-11-13 凌晨，本地未推）
+
+按 Yuto 2026-11-13 01:46 指示：只做代码，不跑测试、不编译、不跑 CI、不触发 GitHub。验收：按代码可编译出全新版本 Android + iOS。
+
+- 共享核心扩展（gpmc `6ecd4cf` + `a2a0086`）：`decide_prepare` 支持视频 / Live Photo / Motion 多资源逐项去重；新增 `batch_pause` / `batch_resume`、`evaluate_scope`（scope2/catalog2）、`validate_proxy`、`livelink_handshake` / `livelink_scope`；`decide_cleanup` 接逐项证据；`migrate_legacy` 凭据永不迁移。核心绝不含删除能力。
+- Android（本地提交 `0418050..66d4ab0`，9 提交）：视频、Live Photo / 多资源、批量暂停恢复镜像、相册范围、资源复用、代理、LiveLink 门控、逐项清理证据、数据迁移代码全部接核心；`processLegacy` 改为纯传输适配器，`deprecated-by-unification` 标记清零；§8 待定项已实施：Room 旧清理表删实体 + `MIGRATION_4_5`（版本升至 5）、单项本机删除全部删除、包名/签名不改。
+- 快照同步：`tools/sync_gpmc.py --check` 通过，新锁定 `913285b19d1b7859`（22 文件），与 iOS 锁定一致。
+- 关键修正：对照已落地核心契约修正 7 处不符（scope 返回键 `in_scope`、mode 只能 default/all/date/advanced、`minImageKb` 10..1024、resources 用 `role`、proxy 仅 http/https、`batch_resume` 不接受 failed 等），22 项 dispatch 验证全部通过。
+- 未验证：Kotlin 未本地编译（本机无 Java），全部须 CI 验证；核心不可用时备份停止、项目留队重试，不再有旧路径兜底；Room v5 的 `schema 5.json` 需首次 CI 构建时由 Room 生成，不要手写；LiveLink 只有门控，无对端传输、无 UI 入口。
