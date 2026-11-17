@@ -109,45 +109,62 @@ def mux_motion(photo, video, destination, keyframe_us):
 
 
 def has_embedded_motion(path):
-    """Recognize a declared JPEG motion resource only when its offset is valid.
+    """Recognize a declared JPEG/HEIC motion resource only with a valid offset.
 
     Container rules: https://developer.android.com/media/platform/motion-photo-format
     No filename or timestamp inference, and no video payload is loaded into memory.
     """
     try:
         with open(path, 'rb') as source:
+            heif_motion = None
             if source.read(2) != b'\xff\xd8':
-                return False
-            source.seek(0)
-            prefix = source.read(1024 * 1024)
+                from .heif_metadata import HeifMetadata
+                metadata = HeifMetadata(source, allow_motion=True)
+                if metadata.motion is None:
+                    return False
+                heif_motion = metadata.motion
+                prefix = metadata.xmp()
+            else:
+                source.seek(0)
+                prefix = source.read(1024 * 1024)
             packet = re.search(rb'<(?:[A-Za-z_][\w.-]*:)?xmpmeta\b.*?</(?:[A-Za-z_][\w.-]*:)?xmpmeta\s*>', prefix, re.DOTALL)
             if not packet or b'<!DOCTYPE' in packet[0] or b'<!ENTITY' in packet[0]:
                 return False
             root = ET.fromstring(packet[0])
             enabled = False
+            modern = []
             lengths = set()
             camera = '{http://ns.google.com/photos/1.0/camera/}'
             item = '{http://ns.google.com/photos/1.0/container/item/}'
             for node in root.iter():
-                attributes = node.attrib
+                attributes = dict(node.attrib)
+                if node.tag.startswith(camera):
+                    attributes[node.tag] = (node.text or '').strip()
+                for child in node:
+                    if child.tag.startswith(item):
+                        attributes[child.tag] = (child.text or '').strip()
+                if camera + 'MotionPhoto' in attributes:
+                    modern.append(attributes[camera + 'MotionPhoto'])
                 enabled = enabled or attributes.get(camera + 'MotionPhoto') == '1' or attributes.get(camera + 'MicroVideo') == '1'
                 legacy = attributes.get(camera + 'MicroVideoOffset')
                 length = attributes.get(item + 'Length') if attributes.get(item + 'Semantic') == 'MotionPhoto' else None
                 for value in (legacy, length):
                     if value is not None and re.fullmatch(r'[0-9]{1,20}', value):
                         lengths.add(int(value))
-            if not enabled or len(lengths) != 1:
+            if not enabled or (modern and any(value != '1' for value in modern)) or len(lengths) != 1:
                 return False
             length = lengths.pop()
             source.seek(0, 2)
             total = source.tell()
             if length < 16 or length > total - 2:
                 return False
+            if heif_motion is not None and heif_motion != (total - length, length):
+                return False
             source.seek(total - length)
             header = source.read(12)
             size, kind = struct.unpack('>I4s', header[:8])
             return kind == b'ftyp' and 12 <= size <= length
-    except (OSError, ValueError, struct.error, ET.ParseError):
+    except (OSError, ValueError, struct.error, ET.ParseError, ProtocolError):
         return False
 
 def mux_jpeg(photo, video, destination, keyframe_us):
