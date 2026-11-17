@@ -9,45 +9,55 @@ import org.junit.Test
  * itself and must only hand the user to Google Photos' official cleanup.
  * These tests cover the Intent chain only; launch() needs a device and is
  * covered by the chain tests (same intents, same order).
+ *
+ * The chain is asserted as pure data (FreeSpaceGuide.attemptSpecs) rather
+ * than as built Intents: local JVM unit tests run against android.jar stubs,
+ * so constructing an Intent or calling Uri.parse() throws
+ * RuntimeException("Stub!") before any assertion runs. attempts() is built
+ * from the same specs, so the tested data and the launched Intents cannot
+ * drift apart.
  */
 class FreeSpaceGuideTest {
     @Test fun freeUpSpaceLinkIsTheVerifiedUniversalLink() {
-        val intent = FreeSpaceGuide.freeUpSpaceLinkIntent()
-        assertEquals(Intent.ACTION_VIEW, intent.action)
-        assertEquals("https://photos.google.com/link/freeupspace", intent.data.toString())
+        val first = FreeSpaceGuide.attemptSpecs(true).first()
+        assertEquals(FreeSpaceGuide.Outcome.OPENED_LINK, first.outcome)
+        assertEquals(Intent.ACTION_VIEW, first.action)
+        assertEquals("https://photos.google.com/link/freeupspace", first.data)
     }
 
     @Test fun photosAppIntentTargetsOnlyThePhotosPackage() {
-        val intent = FreeSpaceGuide.photosAppIntent()
-        assertEquals(Intent.ACTION_MAIN, intent.action)
-        assertEquals(FreeSpaceGuide.PHOTOS_PACKAGE, intent.`package`)
-        assertTrue(intent.hasCategory(Intent.CATEGORY_LAUNCHER))
+        val photos = FreeSpaceGuide.attemptSpecs(true)
+            .first { it.outcome == FreeSpaceGuide.Outcome.OPENED_PHOTOS }
+        assertEquals(Intent.ACTION_MAIN, photos.action)
+        assertEquals(FreeSpaceGuide.PHOTOS_PACKAGE, photos.pkg)
+        assertTrue(photos.categories.contains(Intent.CATEGORY_LAUNCHER))
     }
 
     @Test fun storeFallbacksPointAtPhotos() {
-        assertEquals("market://details?id=com.google.android.apps.photos",
-            FreeSpaceGuide.storeIntent().data.toString())
+        val store = FreeSpaceGuide.attemptSpecs(true)
+            .filter { it.outcome == FreeSpaceGuide.Outcome.OPENED_STORE }
+        assertEquals(2, store.size)
+        assertEquals("market://details?id=com.google.android.apps.photos", store[0].data)
         assertEquals("https://play.google.com/store/apps/details?id=com.google.android.apps.photos",
-            FreeSpaceGuide.webStoreIntent().data.toString())
+            store[1].data)
     }
 
     @Test fun noIntentCarriesADeleteAction() {
-        val intents = FreeSpaceGuide.attempts(true).map { it.second } +
-            FreeSpaceGuide.attempts(false).map { it.second }
-        assertTrue(intents.isNotEmpty())
-        intents.forEach { intent ->
-            assertNotEquals(Intent.ACTION_DELETE, intent.action)
-            assertTrue(intent.action == Intent.ACTION_VIEW || intent.action == Intent.ACTION_MAIN)
+        val specs = FreeSpaceGuide.attemptSpecs(true) + FreeSpaceGuide.attemptSpecs(false)
+        assertTrue(specs.isNotEmpty())
+        specs.forEach { spec ->
+            assertNotEquals(Intent.ACTION_DELETE, spec.action)
+            assertTrue(spec.action == Intent.ACTION_VIEW || spec.action == Intent.ACTION_MAIN)
         }
     }
 
     @Test fun fallbackOrderPrefersVerifiedLinkThenPhotosThenStore() {
-        val installed = FreeSpaceGuide.attempts(true).map { it.first }
+        val installed = FreeSpaceGuide.attemptSpecs(true).map { it.outcome }
         assertEquals(listOf(FreeSpaceGuide.Outcome.OPENED_LINK,
             FreeSpaceGuide.Outcome.OPENED_PHOTOS,
             FreeSpaceGuide.Outcome.OPENED_STORE,
             FreeSpaceGuide.Outcome.OPENED_STORE), installed)
-        val missing = FreeSpaceGuide.attempts(false).map { it.first }
+        val missing = FreeSpaceGuide.attemptSpecs(false).map { it.outcome }
         assertEquals(listOf(FreeSpaceGuide.Outcome.OPENED_LINK,
             FreeSpaceGuide.Outcome.OPENED_STORE,
             FreeSpaceGuide.Outcome.OPENED_STORE), missing)
@@ -55,7 +65,7 @@ class FreeSpaceGuideTest {
 
     @Test fun attemptsNeverIncludeAManualGuidanceIntent() {
         // MANUAL_GUIDANCE is a return value, not an Intent in the chain.
-        assertFalse(FreeSpaceGuide.attempts(true).any { it.first == FreeSpaceGuide.Outcome.MANUAL_GUIDANCE })
-        assertFalse(FreeSpaceGuide.attempts(false).any { it.first == FreeSpaceGuide.Outcome.MANUAL_GUIDANCE })
+        assertFalse(FreeSpaceGuide.attemptSpecs(true).any { it.outcome == FreeSpaceGuide.Outcome.MANUAL_GUIDANCE })
+        assertFalse(FreeSpaceGuide.attemptSpecs(false).any { it.outcome == FreeSpaceGuide.Outcome.MANUAL_GUIDANCE })
     }
 }
