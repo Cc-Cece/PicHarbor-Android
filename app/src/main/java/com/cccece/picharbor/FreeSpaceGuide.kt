@@ -31,30 +31,52 @@ object FreeSpaceGuide {
 
     enum class Outcome { OPENED_LINK, OPENED_PHOTOS, OPENED_STORE, MANUAL_GUIDANCE }
 
+    /**
+     * One step of the fallback chain, as pure data. Local JVM unit tests run
+     * against android.jar stubs, so constructing an Intent or calling
+     * Uri.parse() there throws RuntimeException("Stub!") before any assertion
+     * runs — that is why the chain is defined here as data and only
+     * materialised into real Intents on device (see attempts()/toIntent()).
+     * Intent.ACTION_* / CATEGORY_* are const Strings, so referencing them is
+     * safe on the JVM. Every step is a view/launch action; none carries a
+     * delete action.
+     */
+    data class AttemptSpec(
+        val outcome: Outcome,
+        val action: String,
+        val data: String?,
+        val pkg: String?,
+        val categories: List<String> = emptyList(),
+    )
+
     /** The verified official free-up-space link (iOS-verified; see header). */
-    fun freeUpSpaceLinkIntent(): Intent =
-        Intent(Intent.ACTION_VIEW, Uri.parse(FREE_UP_SPACE_URL))
-
-    fun photosAppIntent(): Intent = Intent(Intent.ACTION_MAIN)
-        .addCategory(Intent.CATEGORY_LAUNCHER)
-        .setPackage(PHOTOS_PACKAGE)
-
-    fun storeIntent(): Intent = Intent(Intent.ACTION_VIEW,
-        Uri.parse("market://details?id=$PHOTOS_PACKAGE"))
-
-    fun webStoreIntent(): Intent = Intent(Intent.ACTION_VIEW,
-        Uri.parse("https://play.google.com/store/apps/details?id=$PHOTOS_PACKAGE"))
+    fun attemptSpecs(photosInstalled: Boolean): List<AttemptSpec> {
+        val chain = mutableListOf(
+            AttemptSpec(Outcome.OPENED_LINK, Intent.ACTION_VIEW, FREE_UP_SPACE_URL, null),
+        )
+        if (photosInstalled) chain += AttemptSpec(Outcome.OPENED_PHOTOS,
+            Intent.ACTION_MAIN, null, PHOTOS_PACKAGE, listOf(Intent.CATEGORY_LAUNCHER))
+        chain += AttemptSpec(Outcome.OPENED_STORE, Intent.ACTION_VIEW,
+            "market://details?id=$PHOTOS_PACKAGE", null)
+        chain += AttemptSpec(Outcome.OPENED_STORE, Intent.ACTION_VIEW,
+            "https://play.google.com/store/apps/details?id=$PHOTOS_PACKAGE", null)
+        return chain
+    }
 
     /**
-     * Ordered fallback chain, unit-testable without a Context. Every Intent
-     * is a view/launch action; none carries a delete action.
+     * Ordered fallback chain, unit-testable without a Context. Built from
+     * attemptSpecs() so the tested data and the launched Intents can never
+     * drift apart.
      */
-    fun attempts(photosInstalled: Boolean): List<Pair<Outcome, Intent>> {
-        val chain = mutableListOf(Outcome.OPENED_LINK to freeUpSpaceLinkIntent())
-        if (photosInstalled) chain += Outcome.OPENED_PHOTOS to photosAppIntent()
-        chain += Outcome.OPENED_STORE to storeIntent()
-        chain += Outcome.OPENED_STORE to webStoreIntent()
-        return chain
+    fun attempts(photosInstalled: Boolean): List<Pair<Outcome, Intent>> =
+        attemptSpecs(photosInstalled).map { it.outcome to it.toIntent() }
+
+    private fun AttemptSpec.toIntent(): Intent {
+        val intent = Intent(action)
+        if (data != null) intent.data = Uri.parse(data)
+        if (pkg != null) intent.setPackage(pkg)
+        categories.forEach { intent.addCategory(it) }
+        return intent
     }
 
     /** Tries the chain in order; returns what actually happened so the UI can say so. */
