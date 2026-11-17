@@ -17,12 +17,20 @@ data class HarborSettings(
     val concurrency: Int = 2, val timeout: Int = 60, val retries: Int = 3, val sameName: Boolean = false,
     val folders: Set<String> = setOf("@camera"), val trees: Set<String> = emptySet(),
     val theme: String = "system", val palette: String = "system", val albumMode: String = "folder",
-    val albumValue: String = "", val mobile: String = "none", val account: String = "",val bootSession:Int=-1,val cleanupConcurrency:Int=2,
-    val cleanupReaders:Int=2,val cleanupRetries:Int=1,val cleanupAdaptive:Boolean=true,
-    val cleanupCloudState:Boolean=true,val cleanupOriginalAccess:Boolean=true,val cleanupConsent:String="full",
-    val allFolders:Boolean=false
+    val albumValue: String = "", val mobile: String = "none", val account: String = "",val bootSession:Int=-1,
+    val allFolders:Boolean=false,
+    /** Live Photo pairing: "original" (photo+video, joint submit) is the
+     * default; "motion" is the older single-file Motion Photo default. An
+     * upgrade never overwrites an existing choice (a missing key just reads
+     * as "original"); the per-account profile only restores a value saved
+     * for that account. */
+    val livePhotoPairing:String="original",
+    /** Explicit proxy, off by default and device-level (not per account, so
+     * it is deliberately NOT part of the per-account profile maps below).
+     * The password is NOT stored here; see CredentialStore proxy methods. */
+    val proxyEnabled:Boolean=false, val proxyScheme:String="http", val proxyHost:String="",
+    val proxyPort:Int=0, val proxyUser:String=""
 ) {
-    val cleanupPolicy get()=CleanupPolicy(cleanupCloudState,cleanupOriginalAccess).let{if(it.complete||cleanupConsent==it.id)it else CleanupPolicy()}
     fun includesFolder(media: MediaEntry) = allFolders || folders.contains(media.folderKey) ||
         (folders.contains("@camera") && media.source == "media" && media.folderName.equals("Camera", true))
     fun includes(media: MediaEntry) = includesFolder(media) && (videos || !media.video)
@@ -41,14 +49,13 @@ class Preferences(private val context: Context) {
         palette=p[stringPreferencesKey("palette")]?:"system", albumMode=p[stringPreferencesKey("albumMode")]?:"folder",
         albumValue=p[stringPreferencesKey("albumValue")]?:"", mobile=p[stringPreferencesKey("mobile")]?:"none",
         account=p[stringPreferencesKey("account")]?:"",bootSession=p[intPreferencesKey("bootSession")]?:-1,
-        cleanupConcurrency=(p[intPreferencesKey("cleanupConcurrency")]?:2).coerceIn(1,20),
-        cleanupReaders=(p[intPreferencesKey("cleanupReaders")]?:2).coerceIn(1,4),
-        cleanupRetries=(p[intPreferencesKey("cleanupRetries")]?:1).coerceIn(0,3),
-        cleanupAdaptive=p[booleanPreferencesKey("cleanupAdaptive")]?:true,
-        cleanupCloudState=p[booleanPreferencesKey("cleanupCloudState")]?:true,
-        cleanupOriginalAccess=p[booleanPreferencesKey("cleanupOriginalAccess")]?:true,
-        cleanupConsent=p[stringPreferencesKey("cleanupConsent")]?:"full",
-        allFolders=p[booleanPreferencesKey("allFolders")]?:false
+        allFolders=p[booleanPreferencesKey("allFolders")]?:false,
+        livePhotoPairing=p[stringPreferencesKey("livePhotoPairing")]?:"original",
+        proxyEnabled=p[booleanPreferencesKey("proxyEnabled")]?:false,
+        proxyScheme=p[stringPreferencesKey("proxyScheme")]?:"http",
+        proxyHost=p[stringPreferencesKey("proxyHost")]?:"",
+        proxyPort=p[intPreferencesKey("proxyPort")]?:0,
+        proxyUser=p[stringPreferencesKey("proxyUser")]?:""
     )
     val flow = context.harborPreferences.data.map(::from)
     suspend fun get() = flow.first()
@@ -58,16 +65,11 @@ class Preferences(private val context: Context) {
     suspend fun folders(value: Set<String>) { context.harborPreferences.edit { it[stringSetPreferencesKey("folders")] = value } }
     suspend fun trees(value: Set<String>) { context.harborPreferences.edit { it[stringSetPreferencesKey("trees")] = value } }
     suspend fun mobile(value: String) { context.harborPreferences.edit { it[stringPreferencesKey("mobile")]=value; it[booleanPreferencesKey("wifi")]=value=="none" } }
-    internal suspend fun cleanupPolicy(policy:CleanupPolicy) {context.harborPreferences.edit {
-        it[booleanPreferencesKey("cleanupCloudState")]=policy.cloudState
-        it[booleanPreferencesKey("cleanupOriginalAccess")]=policy.originalAccess
-        it[stringPreferencesKey("cleanupConsent")]=policy.id
-    }}
     suspend fun activateAccount(account:String) {
         context.harborPreferences.edit { p ->
-            val booleans=mapOf("onboarded" to false,"auto" to false,"wifi" to true,"charging" to false,"videos" to true,"scheduled" to false,"restart" to true,"sameName" to false,"allFolders" to false,"cleanupAdaptive" to true,"cleanupCloudState" to true,"cleanupOriginalAccess" to true)
-            val strings=mapOf("time" to "02:00","quality" to "original","albumMode" to "folder","albumValue" to "","mobile" to "none","cleanupConsent" to "full")
-            val integers=mapOf("concurrency" to 2,"timeout" to 60,"retries" to 3,"cleanupConcurrency" to 2,"cleanupReaders" to 2,"cleanupRetries" to 1)
+            val booleans=mapOf("onboarded" to false,"auto" to false,"wifi" to true,"charging" to false,"videos" to true,"scheduled" to false,"restart" to true,"sameName" to false,"allFolders" to false)
+            val strings=mapOf("time" to "02:00","quality" to "original","albumMode" to "folder","albumValue" to "","mobile" to "none","livePhotoPairing" to "original")
+            val integers=mapOf("concurrency" to 2,"timeout" to 60,"retries" to 3)
             val old=p[stringPreferencesKey("account")].orEmpty()
             if(old==account)return@edit
             if(old.isNotBlank()) {

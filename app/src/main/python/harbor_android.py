@@ -17,41 +17,14 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
-from .api import Api
-from .client import Client
-from .db_update_parser import parse_db_update
-from .utils import parse_email
+import harbor_diagnostics as diag
+from gpmc.api import Api
+from gpmc.client import Client
+from gpmc.db_update_parser import parse_db_update
+from gpmc.utils import parse_email
 
 
-class Cancelled(Exception):
-    pass
-
-
-def known_integer(value):
-    return value if isinstance(value,int) and not isinstance(value,bool) and value >= 0 else None
-
-
-def error_code(error):
-    value = str(error)
-    for marker, code in (
-        ("encrypted auth token", "ENCRYPTED_TOKEN"), ("TokenEncrypted", "ENCRYPTED_TOKEN"),
-        ("MissingDroidguard", "DEVICE_VERIFICATION"), ("device verification", "DEVICE_VERIFICATION"),
-        ("NeedsBrowser", "LOGIN_REQUIRED"), ("browser sign-in", "LOGIN_REQUIRED"),
-        ("fresh browser sign-in", "LOGIN_REQUIRED"), ("BadAuthentication", "LOGIN_REQUIRED"),
-        ("rejected the credential", "LOGIN_REQUIRED"),
-    ):
-        if marker in value:
-            return code
-    if isinstance(error, Cancelled):
-        return "CANCELLED"
-    if isinstance(error, requests.exceptions.HTTPError):
-        status = error.response.status_code if error.response is not None else 0
-        return "LOGIN_REQUIRED" if status in (401, 403) else ("RATE_LIMITED" if status == 429 else "NETWORK_ERROR")
-    if isinstance(error, requests.exceptions.RequestException):
-        return "NETWORK_ERROR"
-    if isinstance(error, (OSError, PermissionError)) or "SecurityException" in type(error).__name__:
-        return "FILE_ACCESS"
-    return "ENGINE_ERROR"
+from gpmc.errors import OperationCancelled as Cancelled, classify as error_code, known_integer
 
 
 class MobileApi(Api):
@@ -62,13 +35,14 @@ class MobileApi(Api):
 
     @property
     def bearer_token(self):
-        with self.auth_lock:
+        with diag.observed_lock(self.auth_lock, "auth_lock"):
             return super().bearer_token
 
     def _new_session(self):
         # Retry is controlled per item below, rather than multiplying urllib3 retries.
         session = requests.Session()
         session.verify = True
+        session.trust_env = False
         if self.proxy:
             session.proxies.update({"https": self.proxy, "http": self.proxy})
         return session
@@ -96,6 +70,7 @@ class MobileService:
         self.client = None
         self.credential = ""
         self.account = ""
+        self.proxy = ""
         self.full_snapshot_id = ""
         self.full_snapshot_at = 0.0
         self.connection_lock = threading.RLock()
@@ -148,15 +123,16 @@ class MobileService:
     def operation(self, exclusive=False):
         # Keep account/client/cache immutable for all in-flight operations,
         # while allowing concurrent uploads within that account.
-        with self.lifecycle:
-            if exclusive: self.waiting_writers += 1
-            try:
-                while self.exclusive_operation or (self.active_operations if exclusive else self.waiting_writers):
-                    self.lifecycle.wait(0.2)
-                if exclusive: self.exclusive_operation = True
-                else: self.active_operations += 1
-            finally:
-                if exclusive: self.waiting_writers -= 1
+        with diag.operation("lifecycle", "wait", kind="lifecycle"):
+            with self.lifecycle:
+                if exclusive: self.waiting_writers += 1
+                try:
+                    while self.exclusive_operation or (self.active_operations if exclusive else self.waiting_writers):
+                        self.lifecycle.wait(0.2)
+                    if exclusive: self.exclusive_operation = True
+                    else: self.active_operations += 1
+                finally:
+                    if exclusive: self.waiting_writers -= 1
         try:
             yield
         finally:
@@ -165,16 +141,25 @@ class MobileService:
                 else: self.active_operations -= 1
                 self.lifecycle.notify_all()
 
-    def connect(self, credential, timeout=60):
-        with self.connection_lock:
-            if self.client is None or self.credential != credential:
+    def connect(self, credential, timeout=60, proxy=""):
+        """Connect with an explicit proxy ("" = direct, the default).
+
+        The proxy URL may carry credentials; it is held in memory only, is
+        never logged, and TLS verification stays on (session.verify = True
+        in MobileApi._new_session). A changed proxy rebuilds the client so
+        a stale session is never reused.
+        """
+        with diag.observed_lock(self.connection_lock, "connection_lock"):
+            if self.client is None or self.credential != credential or self.proxy != proxy:
                 self.client = None
-                client = Client(auth_data=credential, timeout=timeout, log_level="CRITICAL")
-                api = MobileApi(client.auth_data, language=client.language, timeout=timeout)
+                client = Client(auth_data=credential, timeout=timeout, log_level="CRITICAL", proxy=proxy)
+                api = MobileApi(client.auth_data, language=client.language, timeout=timeout, proxy=proxy)
                 _ = api.bearer_token
                 client.api = api
+                diag.install_api(api)
                 self.client = client
                 self.credential = client.auth_data
+                self.proxy = proxy
                 self.account = parse_email(client.auth_data).strip().lower()
                 self.full_snapshot_id = ""
                 self.full_snapshot_at = 0.0
@@ -202,6 +187,7 @@ class MobileService:
             raise Cancelled()
 
     def emit(self, callback, phase, completed=0, total=0):
+        diag.progress(phase, completed, total)
         self.check(callback)
         if callback:
             callback.onEvent(json.dumps({"phase": phase, "completed": completed, "total": total}))
@@ -216,9 +202,23 @@ class MobileService:
                 sha1.update(chunk); sha256.update(chunk); completed += len(chunk)
         return {"sha1": sha1.hexdigest(), "sha256": sha256.hexdigest(), "size": completed}
 
+    def lookup(self, item, bridge, callback):
+        """Pre-upload dedup lookup for harbor_core.decide_prepare.
+
+        Hashes the source and asks the cloud for the same content. No bytes
+        are uploaded, nothing is committed and nothing is deleted; the
+        caller decides (via the core) whether the upload can be skipped.
+        Returns the digests plus the remote key ("" when absent).
+        """
+        digest = self.check_digest(item, bridge, callback)
+        key = self.client.api.find_remote_media_by_hash(bytes.fromhex(digest["sha1"]))
+        return {**digest, "remote_key": key or ""}
+
     def process(self, item, bridge, callback):
         self.check(callback)
-        handle = bridge.open(item["uri"], item["name"])
+        with diag.operation("source_open"):
+            handle = bridge.open(item["uri"], item["name"])
+        diag.emit("resource.opened", {"source_size": int(handle.getSize())})
         try:
             path = str(handle.getPath())
             digest = self.hashes(path, callback)
@@ -227,9 +227,15 @@ class MobileService:
                 return {**result, "state": "failed", "error": "SOURCE_CHANGED"}
             if digest["size"] != int(handle.getSize()):
                 return {**result, "state": "failed", "error": "SOURCE_CHANGED"}
-            with self.content_locks[int(digest["sha1"][:8],16) % len(self.content_locks)]:
+            with diag.observed_lock(self.content_locks[int(digest["sha1"][:8],16) % len(self.content_locks)], "content_lock"):
                 self.emit(callback, "checking", 0, digest["size"])
-                remote = self.client.api.find_remote_media_by_hash(bytes.fromhex(digest["sha1"]))
+                if item.get("lookup_fresh"):
+                    # The core flow already looked this content up (lookup ->
+                    # decide_prepare); that result is authoritative and is
+                    # not derived a second time here. "" means "not found".
+                    remote = item.get("lookup_remote_key") or None
+                else:
+                    remote = self.client.api.find_remote_media_by_hash(bytes.fromhex(digest["sha1"]))
                 if remote:
                     result.update(remote_key=remote, origin=result["origin"] or "content_exists")
                 elif item.get("remote_key"):
@@ -267,6 +273,7 @@ class MobileService:
                             code = error_code(error)
                             if code not in ("NETWORK_ERROR", "RATE_LIMITED") or attempt >= maximum:
                                 raise
+                            diag.emit("retry.scheduled", {"code": code, "retry_attempt": attempt + 1, "retry_limit": maximum, "delay_ms": min(30, 2 ** (attempt + 1))*1000})
                             self.emit(callback, "retrying", attempt + 1, maximum)
                             deadline = time.monotonic() + min(30, 2 ** (attempt + 1))
                             while time.monotonic() < deadline:
@@ -281,7 +288,7 @@ class MobileService:
                     if mode == "existing" and value:
                         self.client.add_to_existing_album([result["remote_key"]], value)
                     elif mode in ("folder", "custom") and value:
-                        with self.sync_lock:
+                        with diag.observed_lock(self.sync_lock, "sync_lock"):
                             with closing(sqlite3.connect(self.db_path)) as db, db:
                                 found = db.execute("SELECT album_key FROM albums WHERE title=? ORDER BY album_key LIMIT 1", (value,)).fetchone()
                             if found:
@@ -297,6 +304,7 @@ class MobileService:
                 return {**result, "state": "exists" if result["origin"] == "content_exists" else "done"}
         finally:
             handle.close()
+            diag.emit("resource.closed")
 
     def _consume(self, response, snapshot_id=""):
         token, resume, _, deleted = parse_db_update(response)
@@ -307,7 +315,7 @@ class MobileService:
             for raw in raw_items:
                 if not isinstance(raw, dict): continue
                 try:
-                    from .db_update_parser import _parse_media_item, _get_nested
+                    from gpmc.db_update_parser import _parse_media_item, _get_nested
                     item = _parse_media_item(raw)
                     details = raw.get("2", {})
                     trash_section = details.get("16")
@@ -343,7 +351,7 @@ class MobileService:
         return token, resume
 
     def synchronize(self, callback=None, full=False):
-        with self.sync_lock:
+        with diag.observed_lock(self.sync_lock, "sync_lock"):
             with closing(sqlite3.connect(self.db_path)) as db, db:
                 token, ready = db.execute("SELECT token,ready FROM state WHERE id=1").fetchone()
             if full: token, ready = "", False
@@ -398,40 +406,13 @@ class MobileService:
 
     @staticmethod
     def allowed_url(url):
-        parsed = urlparse(url)
-        return parsed.scheme == "https" and parsed.username is None and parsed.password is None and any(
-            parsed.hostname == suffix or (parsed.hostname or "").endswith("." + suffix)
-            for suffix in ("google.com", "googleusercontent.com", "googlevideo.com"))
+        from gpmc.media_access import allowed_url
+        return allowed_url(url)
 
     def original_access(self, key, expected_size, callback=None):
-        self.check(callback)
-        with self.measured("original_url"):
-            response = self.client.api.get_download_urls(key)
-        try: url = response["1"]["5"]["2"]["6"]
-        except (KeyError, TypeError): return False
-        if isinstance(url, bytes): url = url.decode("utf-8")
-        if not isinstance(url, str) or not self.allowed_url(url): return False
-        with requests.Session() as session:
-            for method in ("HEAD", "GET"):
-                current = url
-                for _ in range(6):
-                    self.check(callback)
-                    if not self.allowed_url(current): return False
-                    with self.measured("original_head" if method == "HEAD" else "original_range"), session.request(method, current, headers={"Accept-Encoding": "identity", **({"Range": "bytes=0-0"} if method == "GET" else {})},
-                        allow_redirects=False, stream=True, timeout=(15, 30)) as check:
-                        if check.status_code in (301,302,303,307,308):
-                            from urllib.parse import urljoin
-                            current = urljoin(current, check.headers.get("Location", "")); continue
-                        if check.status_code == 429 or check.status_code >= 500:
-                            check.raise_for_status()
-                        if method == "HEAD" and (check.status_code in (400,403,405,501) or (check.status_code == 200 and not check.headers.get("Content-Length", "").isdigit())): break
-                        if check.status_code not in (200,206): return False
-                        length = check.headers.get("Content-Length", "")
-                        if check.status_code == 206:
-                            match = re.fullmatch(r"bytes 0-0/(\d+)", check.headers.get("Content-Range", ""))
-                            length = match.group(1) if match else ""
-                        return length.isdigit() and int(length) == expected_size
-            return False
+        from gpmc.media_access import original_access
+        return original_access(self.client.api, key, expected_size,
+                               checkpoint=lambda: self.check(callback), measured=self.measured)
 
     def verify_cleanup(self, item, bridge, callback):
         digest = self.check_digest(item, bridge, callback)
@@ -533,14 +514,15 @@ class MobileService:
             with self.operation(action in ("connect", "logout")):
                 values = json.loads(payload) if isinstance(payload, str) else payload
                 if action == "logout":
-                    with self.connection_lock:
+                    with diag.observed_lock(self.connection_lock, "connection_lock"):
                         self.client = None; self.credential = ""; self.account = ""
                     return json.dumps({"ok": True})
-                if action == "connect": return json.dumps({"ok": True, **self.connect(values["credential"], values.get("timeout",60))})
+                if action == "connect": return json.dumps({"ok": True, **self.connect(values["credential"], values.get("timeout",60), values.get("proxy", ""))})
                 if self.client is None: return json.dumps({"ok": False, "error": "LOGIN_REQUIRED"})
                 if values.get("_account", self.account) != self.account:
                     return json.dumps({"ok": False, "error": "ACCOUNT_CHANGED"})
                 if action == "process": result = self.process(values,bridge,callback)
+                elif action == "lookup": result = self.lookup(values,bridge,callback)
                 elif action == "synchronize":
                     with self.measured("cloud_sync"):
                         self.synchronize(callback, values.get("full", False))
@@ -556,4 +538,5 @@ class MobileService:
                 else: return json.dumps({"ok": False, "error": "UNKNOWN_OPERATION"})
                 return json.dumps({"ok": True, **result})
         except Exception as error:
+            diag.emit("error.captured", {"code": error_code(error), **diag.safe_error(error)})
             return json.dumps({"ok": False, "error": error_code(error)})

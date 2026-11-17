@@ -1,14 +1,18 @@
 {
-  "version": "1.0.7",
-  "note": "Only new mobile extensions; all 31 original files remain unchanged.",
+  "version": "1.0.9-beta.5",
+  "note": "Platform adapters are pinned here; gpmc is maintained centrally and pinned by gpmc.lock.json.",
   "files": [
     {
-      "path": "gpmc/mobile.py",
-      "sha256": "7ef15b20172096ef3269fec27f4ad66aba372ab1a0ea7499cc14b018c00a6105"
+      "path": "harbor_android.py",
+      "sha256": "094e2c5595695dbc80c76fe1ce7e7f5dcf91613c6a23dbedafb25bc629e4a4e9"
+    },
+    {
+      "path": "harbor_diagnostics.py",
+      "sha256": "9d6d0a944dfc957f3721cab97e303a7bbc1e93bc73a932579b69ee20b139d570"
     },
     {
       "path": "picharbor_engine.py",
-      "sha256": "4394fbe0ac0a555223c7085b31f531dc65fabe6b7db544b072ba93c1d510a8f2"
+      "sha256": "2d0b9aed85e4f097609a989396ee6113f090c7f14e63e06ab7c0d1b802d4c405"
     }
   ]
 }

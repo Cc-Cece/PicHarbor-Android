@@ -14,14 +14,6 @@ class PolicyTest {
         assertFalse(BackupPolicy.matches(media,record.copy(remoteKey="")))
         assertFalse(BackupPolicy.matches(media,null))
     }
-    @Test fun cleanupIsAccountBoundAndExpires() {
-        val proof=CleanupRecord("proof","a","uri",123,"sha256","remote",1000,"ready")
-        assertTrue(BackupPolicy.cleanupFresh(proof,"a",2000))
-        assertFalse(BackupPolicy.cleanupFresh(proof,"b",2000))
-        assertFalse(BackupPolicy.cleanupFresh(proof,"a",999))
-        assertFalse(BackupPolicy.cleanupFresh(proof,"a",301000))
-        assertFalse(BackupPolicy.cleanupFresh(proof.copy(state="blocked"),"a",2000))
-    }
     @Test fun cameraDefaultDoesNotIncludeScreenshotsOrSafLookalikes() {
         val settings=HarborSettings()
         assertTrue(settings.includes(media))

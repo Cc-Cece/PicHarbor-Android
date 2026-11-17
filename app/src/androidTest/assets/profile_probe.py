@@ -3,7 +3,7 @@ import json
 from urllib.parse import parse_qsl, urlencode, urlparse
 import requests
 from picharbor_engine import service
-from gpmc.mobile import MobileApi
+from harbor_android import MobileApi
 
 report = {}
 fields = ("firstName", "lastName", "name", "given_name", "family_name", "picture", "photoUrl", "PhotoUrl")

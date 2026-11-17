@@ -119,17 +119,6 @@ class MediaRepository(private val context: Context, private val dao: HarborDao, 
         } else DocumentFile.fromSingleUri(context,Uri.parse(media.id))?.takeIf{it.exists()&&it.canRead()}?.let { it.length() to it.lastModified() }
     } catch (_:Exception){null}
     fun accessible(media:MediaEntry)=runCatching { context.contentResolver.openFileDescriptor(Uri.parse(media.id),"r")?.use { true }?:false }.getOrDefault(false)
-    /** System delete/trash consent accepts image/video item URIs, not the Files index URI. */
-    suspend fun deleteUri(media:MediaEntry):Uri=withContext(Dispatchers.IO) {
-        val original=Uri.parse(media.id)
-        require(original.authority==MediaStore.AUTHORITY)
-        var volume=original.pathSegments.first()
-        context.contentResolver.query(original,arrayOf(MediaStore.MediaColumns.VOLUME_NAME),null,null,null)?.use {
-            if(it.moveToFirst())volume=it.getString(0)?:volume
-        }
-        val collection=if(media.video)MediaStore.Video.Media.getContentUri(volume) else MediaStore.Images.Media.getContentUri(volume)
-        ContentUris.withAppendedId(collection,ContentUris.parseId(original))
-    }
     fun presence(id:String):Boolean?=try {
         context.contentResolver.query(Uri.parse(id),arrayOf(OpenableColumns.DISPLAY_NAME),null,null,null)?.use{it.moveToFirst()}
     } catch (_:SecurityException){null} catch (_:java.io.FileNotFoundException){false} catch (_:Exception){null}
@@ -137,10 +126,13 @@ class MediaRepository(private val context: Context, private val dao: HarborDao, 
 
 /** Java methods called by Python; fd ownership stays with the returned handle. */
 class SourceHandle(val path:String, val size:Long, private val input:android.os.ParcelFileDescriptor?, private val temporary:File?) : AutoCloseable {
-    override fun close(){input?.close();temporary?.delete()}
+    private val reference=DiagnosticContext()
+    init {Diagnostics.event("resource.opened",reference,org.json.JSONObject().put("source_kind",if(temporary==null)"file_descriptor" else "staging").put("source_size",size))}
+    override fun close(){try {input?.close();temporary?.delete()} finally {Diagnostics.event("resource.closed",reference)}}
 }
 class SourceBridge(private val context:Context) {
     fun open(uri:String,name:String):SourceHandle {
+        Diagnostics.event("source.open_requested",attrs=org.json.JSONObject().put("source_kind",if(uri.startsWith("content://media/"))"media_store" else "document_provider").put("filename",name))
         val descriptor=context.contentResolver.openFileDescriptor(Uri.parse(uri),"r") ?: throw SecurityException("NO_ACCESS")
         val path="/proc/self/fd/${descriptor.fd}"
         try {

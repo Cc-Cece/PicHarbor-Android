@@ -13,8 +13,8 @@ android {
         applicationId = "com.cccece.picharbor"
         minSdk = 29
         targetSdk = 36
-        versionCode = 10008
-        versionName = "1.0.8"
+        versionCode = 10013
+        versionName = "1.0.9-beta.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -59,6 +59,11 @@ chaquopy {
     }
 }
 dependencyLocking { lockAllConfigurations() }
+val verifyGpmc by tasks.registering(Exec::class) {
+    workingDir(rootProject.projectDir)
+    commandLine(providers.gradleProperty("buildPython").getOrElse("python"), "tools/verify_engine.py")
+}
+tasks.named("preBuild") { dependsOn(verifyGpmc) }
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.08.00"))
     implementation("androidx.activity:activity-compose:1.10.1")
