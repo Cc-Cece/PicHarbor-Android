@@ -616,10 +616,12 @@ class BackupRepository(private val graph:AppGraph) {
             val asset=JSONObject().put("local_id",group.photo.id).put("filename",group.photo.name).put("sha1",photo.sha1).put("sha256",photo.sha256).put("size",photo.size).put("media_kind","live_photo").put("resources",resources)
             task=graph.harborCore.updatedTask(graph.harborCore.createTask(item.id,asset,"android:${group.photo.id}:${group.photo.modified}"))?:throw EngineFailure("ENGINE_ERROR")
             if(task!!.optString("state")=="waiting_confirmation")move("confirming")
+            else if(task!!.optString("state")=="confirming") { /* Retry album sync after confirmed pair. */ }
             else {move("preparing");move("uploading");move("submitting");move("confirming")}
             fun resource(value:MediaEntry)=JSONObject().put("uri",value.id).put("name",value.name)
             val request=JSONObject().put("_account",job.account).put("task_id",item.id).put("photo",resource(group.photo)).put("video",resource(video))
                 .put("quality",job.quality).put("strategy",job.liveStrategy).put("created",group.photo.captured).put("modified",group.photo.modified)
+                .put("album_mode",job.albumMode).put("album_value",job.albumValue).put("folder",group.photo.albumFolder)
             if(job.liveStrategy=="motion")keyframeUs(video)?.let{request.put("keyframe_us",it)}
             graph.dao.putItem(item.copy(state="uploading"))
             val result=graph.engine.call("process_pair",request,EngineCallback(cancelled){event->
@@ -631,15 +633,16 @@ class BackupRepository(private val graph:AppGraph) {
                 graph.dao.putItem(item.copy(state="waiting_confirmation",error="PAIR_CONFIRMATION_PENDING"))
                 return true
             }
-            if(result.optString("state")!="done")throw EngineFailure(result.optString("error","PAIR_CONFIRMATION_PENDING"))
+            val albumPending=result.optString("state")=="album_pending"
+            if(result.optString("state")!="done"&&!albumPending)throw EngineFailure(result.optString("error","PAIR_CONFIRMATION_PENDING"))
             val key=result.getString("remote_key")
-            move("done",true,key)
+            if(!albumPending)move("done",true,key)
             graph.database.withTransaction {
                 for((entry,role) in listOf(group.photo to "photo",video to "video")) {
                     val value=result.getJSONObject(role)
                     graph.dao.putBackup(BackupRecord(job.account,entry.id,value.getString("sha1"),value.getString("sha256"),key,value.getLong("size"),entry.modified,job.quality,"paired",System.currentTimeMillis()))
                 }
-                graph.dao.putItem(item.copy(state="done",remoteKey=key,sha1=photo.sha1,sha256=photo.sha256,origin="paired",attempt=item.attempt+1))
+                graph.dao.putItem(item.copy(state=if(albumPending)"album_pending" else "done",error=result.optString("error"),remoteKey=key,sha1=photo.sha1,sha256=photo.sha256,origin="paired",attempt=item.attempt+1))
             }
             return true
         } catch(error:Exception) {

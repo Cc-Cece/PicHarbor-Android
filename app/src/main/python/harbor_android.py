@@ -283,20 +283,7 @@ class MobileService:
                     callback.onEvent(json.dumps({"phase": "uploaded", **result}))
                 try:
                     self.check(callback)
-                    mode, value = item.get("album_mode", "none"), item.get("album_value", "")
-                    if mode == "folder": value = item.get("folder", "")
-                    if mode == "existing" and value:
-                        self.client.add_to_existing_album([result["remote_key"]], value)
-                    elif mode in ("folder", "custom") and value:
-                        with diag.observed_lock(self.sync_lock, "sync_lock"):
-                            with closing(sqlite3.connect(self.db_path)) as db, db:
-                                found = db.execute("SELECT album_key FROM albums WHERE title=? ORDER BY album_key LIMIT 1", (value,)).fetchone()
-                            if found:
-                                self.client.add_to_existing_album([result["remote_key"]], found[0])
-                            else:
-                                album_key = self.client.api.create_album(value, [result["remote_key"]])
-                                with closing(sqlite3.connect(self.db_path)) as db, db:
-                                    db.execute("INSERT OR REPLACE INTO albums VALUES(?,?)", (album_key, value))
+                    self.sync_album(item,result["remote_key"])
                 except Cancelled:
                     return {**result, "state": "album_pending", "error": "CANCELLED"}
                 except Exception as error:
@@ -305,6 +292,30 @@ class MobileService:
         finally:
             handle.close()
             diag.emit("resource.closed")
+
+    def sync_album(self,item,remote_key):
+        mode, title = item.get('album_mode','none'), item.get('album_value','')
+        if mode=='folder':title=item.get('folder','')
+        if mode=='existing' and title:
+            self.client.add_to_existing_album([remote_key],title)
+        elif mode in ('folder','custom') and title:
+            with diag.observed_lock(self.sync_lock,'sync_lock'):
+                with closing(sqlite3.connect(self.db_path)) as db:
+                    found=db.execute('SELECT album_key FROM albums WHERE title=? ORDER BY album_key LIMIT 1',(title,)).fetchone()
+                if found:self.client.add_to_existing_album([remote_key],found[0])
+                else:
+                    key=self.client.api.create_album(title,[remote_key])
+                    with closing(sqlite3.connect(self.db_path)) as db,db:
+                        db.execute('INSERT OR REPLACE INTO albums VALUES(?,?)',(key,title))
+
+    def pair_result(self,value,resources,key,callback):
+        result={'state':'done','remote_key':key,'photo':resources['photo'],'video':resources['video']}
+        try:
+            self.check(callback)
+            self.sync_album(value,key)
+        except Exception as error:
+            return {**result,'state':'album_pending','error':error_code(error)}
+        return result
 
     def process_pair(self, value, bridge, callback):
         """Keep opaque receipts and a durable commit fence until double-hash confirmation."""
@@ -333,14 +344,21 @@ class MobileService:
             if value.get('strategy') == 'motion':
                 from gpmc.motion_photo import mux_jpeg
                 destination=folder/(task+'.motion.jpg')
-                if not destination.exists():
-                    mux_jpeg(paths['photo'],paths['video'],destination,value.get('keyframe_us'))
+                temporary=folder/(task+'.motion.part')
+                temporary.unlink(missing_ok=True)
+                try:
+                    mux_jpeg(paths['photo'],paths['video'],temporary,value.get('keyframe_us'))
+                    for role in ('photo','video'):
+                        if self.hashes(paths[role],callback)!={key:resources[role][key] for key in ('sha1','sha256','size')}:
+                            return {'state':'failed','error':'SOURCE_CHANGED'}
+                    temporary.replace(destination)
+                finally:temporary.unlink(missing_ok=True)
                 result=self.process({'uri':destination.as_uri(),'name':Path(value['photo']['name']).stem+'_MP.jpg',
                     'quality':value.get('quality','original'),'album_mode':'none','modified':value.get('modified',0),'retries':value.get('retries',3)},bridge,callback)
                 if result.get('state') in ('done','exists'):
                     key=self.client.api.find_remote_media_by_hash(bytes.fromhex(result['sha1']))
                     if key:
-                        return {'state':'done','remote_key':key,'photo':resources['photo'],'video':resources['video']}
+                        return self.pair_result(value,resources,key,callback)
                 return {'state':'waiting_confirmation','error':'PAIR_CONFIRMATION_PENDING'}
             status=protocol.dispatch('confirm_pair',resources)
             fence=folder/(task+'.submitted')
@@ -380,7 +398,7 @@ class MobileService:
             for role in ('photo','video'):
                 resources[role]['remote_key']=status['remote_key']
                 (folder/(task+'.'+role+'.receipt')).unlink(missing_ok=True)
-            return {'state':'done','remote_key':status['remote_key'],'photo':resources['photo'],'video':resources['video']}
+            return self.pair_result(value,resources,status['remote_key'],callback)
         finally:
             for handle in handles:handle.close()
 
