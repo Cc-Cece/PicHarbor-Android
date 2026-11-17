@@ -160,7 +160,7 @@ class RestoreReceiver:BroadcastReceiver() {
         val pending=goAsync();val graph=(context.applicationContext as PicHarborApp).graph
         graph.scope.launch {try {
             val settings=graph.preferences.get()
-            if(intent.action!=Intent.ACTION_BOOT_COMPLETED||settings.restart){graph.scheduler.configure();graph.scheduler.restorePending();graph.cleanup.restorePending();if(!settings.scheduled)graph.scheduler.checkSoon()}
+            if(intent.action!=Intent.ACTION_BOOT_COMPLETED||settings.restart){graph.scheduler.configure();graph.scheduler.restorePending();if(!settings.scheduled)graph.scheduler.checkSoon()}
         } finally {pending.finish()}}
     }
 }

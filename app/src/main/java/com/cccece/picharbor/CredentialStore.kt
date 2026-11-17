@@ -22,6 +22,9 @@ class CredentialStore(context:Context) {
     private val avatars=java.io.File(context.filesDir,"account-avatars")
     private val prefs=context.getSharedPreferences("accounts_v2",Context.MODE_PRIVATE)
     private val legacy=context.getSharedPreferences("credential",Context.MODE_PRIVATE)
+    /** Proxy password storage: device-level, separate from account credentials. */
+    private val proxyPrefs=context.getSharedPreferences("proxy_v2",Context.MODE_PRIVATE)
+    private val proxyAlias="picharbor.proxy.v1"
     val accounts=MutableStateFlow(listOf<SavedAccount>())
     init { publish() }
     private fun normal(account:String)=account.trim().lowercase(Locale.ROOT)
@@ -87,6 +90,30 @@ class CredentialStore(context:Context) {
         android.util.AtomicFile(java.io.File(avatars,"$id.img")).delete()
         appContext.imageLoader.memoryCache?.let{cache->cache.keys.filter{it.key.startsWith("avatar:$email:")}.forEach{cache.remove(it)}}
         publish()
+    }
+    /**
+     * Proxy password, kept in the Android Keystore (AES-GCM, its own alias)
+     * and never written to logs, to the core, or to plain preferences.
+     * Only the engine session receives it, in memory, when building the
+     * proxy URL. An empty password clears the stored one.
+     */
+    @Synchronized fun saveProxyCredential(password:String) {
+        if(password.isEmpty()){clearProxyCredential();return}
+        val cipher=Cipher.getInstance("AES/GCM/NoPadding").apply{init(Cipher.ENCRYPT_MODE,key(proxyAlias,true))}
+        check(proxyPrefs.edit().putString("iv",Base64.encodeToString(cipher.iv,Base64.NO_WRAP))
+            .putString("data",Base64.encodeToString(cipher.doFinal(password.toByteArray(Charsets.UTF_8)),Base64.NO_WRAP)).commit())
+    }
+    @Synchronized fun loadProxyCredential():String? {
+        val data=proxyPrefs.getString("data",null)?:return null
+        val iv=proxyPrefs.getString("iv",null)?:return null
+        val cipher=Cipher.getInstance("AES/GCM/NoPadding").apply {
+            init(Cipher.DECRYPT_MODE,key(proxyAlias),GCMParameterSpec(128,Base64.decode(iv,Base64.NO_WRAP)))
+        }
+        return cipher.doFinal(Base64.decode(data,Base64.NO_WRAP)).toString(Charsets.UTF_8)
+    }
+    @Synchronized fun clearProxyCredential() {
+        check(proxyPrefs.edit().remove("iv").remove("data").commit())
+        KeyStore.getInstance("AndroidKeyStore").apply{load(null);if(containsAlias(proxyAlias))deleteEntry(proxyAlias)}
     }
     /** Upgrade 1.0.0/1.0.1 in place; delete the legacy copy only after verified storage. */
     @Synchronized fun migrateLegacy(account:String) {

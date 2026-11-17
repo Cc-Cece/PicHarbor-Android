@@ -35,11 +35,19 @@ class PicHarborApp:Application(), coil.ImageLoaderFactory, androidx.work.Configu
             try {
             runCatching { graph.credentials.migrateLegacy(graph.preferences.get().account) }
             graph.dao.recoverJobs();graph.dao.recoverItems()
+            runCatching { graph.backup.recoverCoreTasks() }
+            // Legacy migration is prepared (code-ready, reversible) at
+            // startup: it only reads the old stores and writes a separate
+            // migrated copy, never converting or deleting old data.
+            runCatching { LegacyMigrationRunner(graph).prepare() }.onSuccess { report ->
+                Diagnostics.event("legacy.migration_prepared",attrs=org.json.JSONObject()
+                    .put("source_tasks",report.sourceTasks).put("source_records",report.sourceRecords)
+                    .put("migrated_tasks",report.migratedTasks).put("used_core_action",report.usedCoreAction))
+            }
             // Staging contains only app-owned temporary copies, never original media.
             File(cacheDir,"staging").listFiles()?.forEach{it.delete()}
             graph.scheduler.configure()
             graph.scheduler.restorePending()
-            graph.cleanup.restorePending()
             } finally { graph.startup.complete(Unit) }
             graph.refreshProfile(graph.preferences.get().account)
         }
@@ -63,8 +71,8 @@ class AppGraph(val app:Application,val engineReady:Boolean) {
     val credentials=CredentialStore(app)
     val media=MediaRepository(app,dao,preferences)
     val engine=Engine(app)
+    val harborCore=HarborCore(File(app.filesDir,"runtime/harbor-store.json").absolutePath)
     val backup=BackupRepository(this)
-    val cleanup=CleanupRepository(this)
     val scheduler=Scheduler(this)
     fun refreshProfile(account:String,force:Boolean=false)=scope.launch {
         if(account.isBlank()||!profileLock.tryLock())return@launch
@@ -88,13 +96,28 @@ class AppGraph(val app:Application,val engineReady:Boolean) {
             // Optional display information must never fail login, backup or account switching.
         } finally {profileLock.unlock()}
     }
+    /**
+     * Builds the engine proxy URL from the explicit proxy setting. The
+     * password comes from the Keystore-backed CredentialStore and is only
+     * ever held in memory here; it never goes to the core or to logs. An
+     * invalid proxy fails closed (PROXY_INVALID) instead of connecting
+     * directly or through a broken proxy.
+     */
+    suspend fun proxyUrlForEngine():String {
+        val config=ProxyPolicy.buildConfig(preferences.get())?:return ""
+        when(val validation=ProxyPolicy.validate(harborCore,config)) {
+            ProxyPolicy.Validation.Valid -> {}
+            is ProxyPolicy.Validation.Invalid -> throw EngineFailure(validation.error)
+        }
+        return ProxyPolicy.proxyUrl(config,runCatching{credentials.loadProxyCredential()}.getOrNull())
+    }
     suspend fun ensureAccount():String {
         startup.await()
         if(switching.value)throw EngineFailure("ACCOUNT_CHANGED")
         if(!engineReady)throw EngineFailure("ENGINE_ERROR")
         val expected=preferences.get().account
         val credential=runCatching{credentials.load(expected)}.getOrNull()?:throw EngineFailure("LOGIN_REQUIRED")
-        val result=engine.connect(credential,preferences.get().timeout)
+        val result=engine.connect(credential,preferences.get().timeout,proxyUrlForEngine())
         val actual=result.getString("account")
         if(switching.value||expected.isBlank()||actual!=expected||preferences.get().account!=expected)throw EngineFailure("ACCOUNT_CHANGED")
         credentials.needsLogin(expected,false)
@@ -111,18 +134,18 @@ class AppGraph(val app:Application,val engineReady:Boolean) {
         val previousJob=backup.activeJob.value
         switching.value=true
         try {
-            scheduler.cancelTransfers();backup.stopAndWait();cleanup.stopAndWait()
-            val result=engine.connect(credential,preferences.get().timeout)
+            scheduler.cancelTransfers();backup.stopAndWait()
+            val result=engine.connect(credential,preferences.get().timeout,proxyUrlForEngine())
             val account=result.getString("account")
             if(target!=null&&target!=account)throw EngineFailure("LOGIN_REQUIRED")
             credentials.save(account,result.getString("credential"))
-            if(previous!=account){dao.pauseAccountJobs(previous);dao.expireCleanup(previous,"ACCOUNT_CHANGED")}
+            if(previous!=account){dao.pauseAccountJobs(previous)}
             preferences.activateAccount(account)
             backup.notice.value=""
             dao.restoreAuthJobs(account);dao.restoreAuthItems(account)
         } catch(error:Exception) {
             if(target!=null)credentials.needsLogin(target,true)
-            runCatching{credentials.load(previous)}.getOrNull()?.let{runCatching{engine.connect(it,preferences.get().timeout)}}
+            runCatching{credentials.load(previous)}.getOrNull()?.let{runCatching{engine.connect(it,preferences.get().timeout,proxyUrlForEngine())}}
             if(previousJob.isNotBlank())dao.jobState(previousJob,"queued")
             throw error
         } finally {
@@ -135,8 +158,8 @@ class AppGraph(val app:Application,val engineReady:Boolean) {
         startup.await();accountLock.lock();switching.value=true
         try {
             if(preferences.get().account==account){
-                scheduler.cancelTransfers();backup.stopAndWait();cleanup.stopAndWait()
-                dao.pauseAccountJobs(account);dao.expireCleanup(account,"ACCOUNT_CHANGED")
+                scheduler.cancelTransfers();backup.stopAndWait()
+                dao.pauseAccountJobs(account)
                 if(engineReady)engine.call("logout")
                 preferences.activateAccount("")
                 backup.notice.value=""

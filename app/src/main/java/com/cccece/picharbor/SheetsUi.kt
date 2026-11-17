@@ -25,13 +25,18 @@ fun Choice(label:String,checked:Boolean,description:String="",onClick:()->Unit) 
     }
 }
 @Composable
-fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onCleanup:()->Unit,onLocalDelete:()->Unit,onPickTree:()->Unit) {
+fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onPickTree:()->Unit) {
     val context=LocalContext.current
     val accounts by vm.accounts.collectAsState()
     val mode=vm.sheet
     if(mode.isEmpty())return
-    val cleanupNow by rememberCleanupClock()
     var input by remember(mode){mutableStateOf(if(mode=="time")data.settings.time else "")}
+    var proxyEnabled by remember(mode){mutableStateOf(data.settings.proxyEnabled)}
+    var proxyScheme by remember(mode){mutableStateOf(data.settings.proxyScheme)}
+    var proxyHost by remember(mode){mutableStateOf(data.settings.proxyHost)}
+    var proxyPort by remember(mode){mutableStateOf(if(data.settings.proxyPort>0)data.settings.proxyPort.toString() else "")}
+    var proxyUser by remember(mode){mutableStateOf(data.settings.proxyUser)}
+    var proxyPassword by remember(mode){mutableStateOf("")}
     var dateDialog by remember(mode){mutableStateOf(false)}
     val dates=rememberDateRangePickerState()
     if(dateDialog)DatePickerDialog(onDismissRequest={dateDialog=false},confirmButton={TextButton(onClick={
@@ -45,6 +50,8 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onCleanup
         mode.startsWith("remove-account:")->"移除账号？"
         mode=="appearance"->"外观"
         mode=="quality"->"备份画质"
+        mode=="live-photo"->"实况照片配对"
+        mode=="proxy"->"代理"
         mode=="album"->"相册归类"
         mode=="custom-album"->"自定义相册"
         mode=="albums"->"选择已有相册"
@@ -58,15 +65,6 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onCleanup
         mode=="about"->"关于 PicHarbor"
         mode=="concurrency"->"同时上传数量"
         mode=="timeout"->"连接超时"
-        mode=="delete-local"->"从手机删除？"
-        mode=="cleanup-confirm"->"确认释放手机空间"
-        mode=="cleanup-list"->"核验结果"
-        mode=="cleanup-result"->"清理结果"
-        mode=="cleanup-speed"->"空间检查速度"
-        mode=="cleanup-readers"->"同时读取文件数量"
-        mode=="cleanup-retries"->"检查失败重试"
-        mode=="cleanup-timing"->"检查耗时详情"
-        mode=="cleanup-risk"->"降低检查强度？"
         mode.startsWith("job:")->"任务详情"
         mode.startsWith("end:")->"结束当前任务？"
         else->"PicHarbor"
@@ -113,6 +111,21 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onCleanup
                     Choice("节省空间",data.settings.quality=="saver","可能压缩照片和视频"){vm.setString("quality","saver")}
                     Choice("原始画质（计入配额）",data.settings.quality=="quota","使用 Google 账号存储空间"){vm.setString("quality","quota")}
                     Helper("存储空间是否计入配额，以 Google 相册实际处理结果为准。")
+                }
+                mode=="live-photo"->{
+                    Choice("原始照片配对（联合提交）",data.settings.livePhotoPairing=="original","照片与视频配对，按一个媒体项目备份并一次确认"){vm.setString("livePhotoPairing","original")}
+                    Choice("Motion Photo（单文件）",data.settings.livePhotoPairing=="motion","单个文件内嵌动态视频，按单文件备份"){vm.setString("livePhotoPairing","motion")}
+                    Helper("已有设置不会被升级覆盖；未确认的实况照片只备份、不清理本机原件。")
+                }
+                mode=="proxy"->{
+                    Row(verticalAlignment=Alignment.CenterVertically){Text("启用代理",modifier=Modifier.weight(1f));Switch(proxyEnabled,{proxyEnabled=it},enabled=!vm.busy)}
+                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){listOf("http" to "HTTP","https" to "HTTPS").forEach{(key,label)->FilterChip(proxyScheme==key,{proxyScheme=key},{Text(label)},enabled=proxyEnabled&&!vm.busy)}}
+                    OutlinedTextField(proxyHost,{proxyHost=it.take(253)},label={Text("代理地址")},singleLine=true,enabled=proxyEnabled&&!vm.busy,modifier=Modifier.fillMaxWidth())
+                    OutlinedTextField(proxyPort,{proxyPort=it.filter{c->c.isDigit()}.take(5)},label={Text("端口")},singleLine=true,enabled=proxyEnabled&&!vm.busy,modifier=Modifier.fillMaxWidth())
+                    OutlinedTextField(proxyUser,{proxyUser=it.take(128)},label={Text("账号（可选）")},singleLine=true,enabled=proxyEnabled&&!vm.busy,modifier=Modifier.fillMaxWidth())
+                    OutlinedTextField(proxyPassword,{proxyPassword=it.take(256)},label={Text("密码（可选，留空不改）")},singleLine=true,enabled=proxyEnabled&&!vm.busy,modifier=Modifier.fillMaxWidth(),visualTransformation=androidx.compose.ui.text.input.PasswordVisualTransformation())
+                    Helper("默认关闭。密码只保存在本机安全存储，不会进入共享核心或日志；TLS 校验始终保留。")
+                    Button(onClick={vm.setProxy(proxyEnabled,proxyScheme,proxyHost,proxyPort.toIntOrNull()?:0,proxyUser,proxyPassword)},enabled=!vm.busy,modifier=Modifier.fillMaxWidth()){Text("保存")}
                 }
                 mode=="album"->{
                     listOf("none" to "不分类","folder" to "按来源文件夹").forEach{(key,label)->Choice(label,data.settings.albumMode==key){vm.album(key)}}
@@ -164,56 +177,6 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onCleanup
                 }
                 mode=="concurrency"->{(1..3).forEach{n->Choice(if(n==2)"2 个（默认）" else "$n 个",data.settings.concurrency==n){vm.setInteger("concurrency",n)}}}
                 mode=="timeout"->{listOf(30,60,120).forEach{n->Choice("$n 秒",data.settings.timeout==n){vm.setInteger("timeout",n)}}}
-                mode=="cleanup-speed"->{
-                    listOf(Triple(1,"较省资源","最多同时检查 1 项"),Triple(2,"均衡（默认）","最多同时检查 2 项"),Triple(4,"较快","最多同时检查 4 项")).forEach{(n,label,description)->
-                        Choice(label,data.settings.cleanupConcurrency==n,description){vm.setInteger("cleanupConcurrency",n);vm.sheet=""}
-                    }
-                    var maximum by remember{mutableFloatStateOf(data.settings.cleanupConcurrency.toFloat())}
-                    Text("自定义：最多 ${maximum.toInt()} 项")
-                    Slider(value=maximum,onValueChange={maximum=it},valueRange=1f..20f,steps=18)
-                    Button(onClick={vm.setInteger("cleanupConcurrency",maximum.toInt());vm.sheet=""},modifier=Modifier.fillMaxWidth()){Text("应用自定义数量")}
-                    Helper("较高数值可能增加耗电，并不一定更快。不省略核验，对下次检查生效。")
-                    SettingsRow("同时读取文件数量","${data.settings.cleanupReaders} 个 · 避免同时读取大量视频",Icons.Outlined.Folder,onClick={vm.sheet="cleanup-readers"})
-                    SettingsRow("检查失败重试","最多 ${data.settings.cleanupRetries} 次",Icons.Outlined.Refresh,onClick={vm.sheet="cleanup-retries"})
-                    Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){Text("连接不稳定时自动降速",Modifier.weight(1f));Switch(data.settings.cleanupAdaptive,{vm.setBoolean("cleanupAdaptive",it)})}
-                    Helper("网络恢复后逐步提高至设置上限；登录失效直接停止。")
-                }
-                mode=="cleanup-readers"->{(1..4).forEach{n->Choice("$n 个"+(if(n==2)"（默认）" else ""),data.settings.cleanupReaders==n){vm.setInteger("cleanupReaders",n);vm.sheet="cleanup-speed"}}}
-                mode=="cleanup-retries"->{(0..3).forEach{n->Choice(if(n==0)"不重试" else "$n 次",data.settings.cleanupRetries==n){vm.setInteger("cleanupRetries",n);vm.sheet="cleanup-speed"}}}
-                mode=="cleanup-timing"->{CheckTimingDetails(data.cleanup)}
-                mode=="cleanup-risk"->{
-                    val change=vm.pendingCleanupPolicy
-                    if(change!=null) {
-                        Text("可能在云端原件不可用或状态未确认时，仍允许删除手机文件。删除后可能无法恢复。",color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.titleMedium)
-                        CleanupPolicyNotice(change.desired)
-                        Text("此次变更会使已有清理资格失效，必须重新检查。核心内容检查及系统删除确认仍然保留。")
-                        Text("请手动输入：${CleanupPolicy.ACKNOWLEDGEMENT}")
-                        OutlinedTextField(value=input,onValueChange={input=it},label={Text("输入风险确认语")},modifier=Modifier.fillMaxWidth(),minLines=2)
-                        Button(onClick={vm.confirmCleanupPolicy(input)},enabled=input==CleanupPolicy.ACKNOWLEDGEMENT&&!vm.busy,modifier=Modifier.fillMaxWidth()){Text("确认降低检查强度")}
-                        TextButton(onClick={vm.sheet=""}){Text("保留原设置")}
-                    }
-                }
-                mode=="cleanup-confirm"->{
-                    val ready=data.cleanups.filter{BackupPolicy.cleanupFresh(it,data.settings.account,cleanupNow,data.settings.cleanupPolicy.id)}.take(100)
-                    Text("本次最多移除 ${ready.size} 个已核验的手机文件，释放 ${formatSize(ready.sumOf{it.bytes})}。")
-                    Helper("Google 相册中的备份会保留。手机原件将被移除，其他本地图库可能不再显示；此清理操作可能无法从手机恢复。",Icons.Outlined.Security)
-                    CleanupPolicyNotice(data.settings.cleanupPolicy)
-                    Button(onClick=onCleanup,enabled=ready.isNotEmpty()&&!vm.busy&&!data.cleanup.running,modifier=Modifier.fillMaxWidth()){Text("继续并确认清理")}
-                    TextButton(onClick={vm.sheet=""}){Text("暂不清理")}
-                }
-                mode=="cleanup-result"->{
-                    EmptyState("清理操作已结束",vm.deleteSummary,Icons.Outlined.CloudDone)
-                    Button(onClick={vm.sheet=""},modifier=Modifier.fillMaxWidth()){Text("完成")}
-                    TextButton(onClick={runCatching{context.startActivity(Intent(Intent.ACTION_VIEW,Uri.parse("https://photos.google.com/")))}}){Text("前往 Google 相册")}
-                }
-                mode=="delete-local"->{
-                    val local=data.media.filter{it.id in vm.selected}
-                    Text("将从手机处理 ${local.size.coerceAtMost(100)} 个项目，云端备份不受影响。")
-                    if(local.any{!data.backed(it)})Text("其中有尚未确认备份的内容，删除后可能无法找回。",color=MaterialTheme.colorScheme.error)
-                    Helper("支持的系统媒体会先移入手机回收站；其他文件夹中的文件可能直接移除。")
-                    Button(onClick=onLocalDelete,enabled=local.isNotEmpty()&&!vm.busy,modifier=Modifier.fillMaxWidth()){Text("继续从手机删除")}
-                    TextButton(onClick={vm.sheet=""}){Text("保留")}
-                }
                 mode.startsWith("end:")->{
                     Text("保留已成功备份的内容与历史记录，结束尚未完成的部分。不会删除手机或云端照片。")
                     Button(onClick={vm.end(mode.substringAfter(':'));vm.sheet=""},enabled=!vm.busy,modifier=Modifier.fillMaxWidth()){Text("结束任务")}
@@ -227,7 +190,7 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onCleanup
                 mode=="about"->{
                     EmptyState("PicHarbor","为珍贵的日常，留一份安心。",Icons.Outlined.CloudDone)
                     Text("版本 ${BuildConfig.VERSION_NAME} · 作者 cc_cece")
-                    Helper("备份到 Google 相册，支持手动与自动备份、状态查看及核验后释放空间。不是 Google 官方客户端。")
+                    Helper("备份到 Google 相册，支持手动与自动备份、状态查看；释放空间请使用 Google 相册官方功能。不是 Google 官方客户端。")
                     Helper("本应用无自建业务服务器、无广告或分析上报。照片和必要认证数据直接发送至 Google 服务。")
                     TextButton(onClick={vm.sheet="licenses"}){Text("开源许可")}
                 }
