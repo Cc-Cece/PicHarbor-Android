@@ -60,7 +60,7 @@ class HarborCore(private val storePath: String = "", private val dao: HarborDao?
         val actions=result.optJSONArray("actions")?:org.json.JSONArray()
         val names=(0 until actions.length()).map{actions.getString(it)}.toSet()
         contractReady=result.optBoolean("ok")&&result.optInt("protocol_version")==2&&
-            setOf("create_task","transition","evaluate_scope","batch_pause","batch_resume","select_proxy").all{it in names}
+            setOf("create_task","transition","evaluate_scope","batch_pause","batch_resume","select_proxy","select_versions").all{it in names}
         return contractReady
     }
     @Volatile private var moduleName: String? = null

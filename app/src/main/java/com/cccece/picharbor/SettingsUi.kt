@@ -37,6 +37,7 @@ fun SettingsScreen(vm:HarborViewModel,data:HarborUiData) {
                 SettingsRow("备份文件夹",if(s.allFolders)"所有文件夹 · 自动包含新文件夹" else "选择想自动备份的内容",Icons.Outlined.Folder,onClick={vm.navigate("folders")})
                 ToggleRow("备份视频","照片之外，也保存精彩片段",s.videos,Icons.Outlined.VideoLibrary,!vm.busy){vm.setBoolean("videos",it)}
                 SettingsRow("实况照片配对",livePhotoLabel(s.livePhotoPairing),Icons.Outlined.Image,onClick={vm.sheet="live-photo"})
+                SettingsRow("版本保留",editPolicyLabel(s.editPolicy),Icons.Outlined.Layers,onClick={vm.sheet="edit-policy"})
                 SettingsRow("相册归类",albumLabel(s),Icons.Outlined.Collections,onClick={vm.sheet="album"})
             }
             SectionLabel("备份时机")
@@ -52,6 +53,7 @@ fun SettingsScreen(vm:HarborViewModel,data:HarborUiData) {
 }
 fun qualityName(value:String)=when(value){"unknown"->"待确认";"saver"->"节省空间";"quota"->"计配额原画质";else->"不计配额原画质"}
 fun livePhotoLabel(value:String)=when(value){"motion"->"动态照片封装";"stepwise"->"原始照片配对（分步上传）";else->"原始照片配对"}
+fun editPolicyLabel(value:String)=when(value){"original"->"仅原始版本";"current"->"仅编辑后版本";else->"原始与编辑后均保留"}
 fun albumLabel(s:HarborSettings)=when(s.albumMode){"none"->"不分类";"custom"->"自定义：${s.albumValue}";"existing"->"加入已选择的云端相册";else->"按来源文件夹"}
 
 @Composable

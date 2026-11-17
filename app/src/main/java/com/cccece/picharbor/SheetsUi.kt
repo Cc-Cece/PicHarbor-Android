@@ -18,9 +18,9 @@ import java.time.*
 import java.time.format.DateTimeFormatter
 
 @Composable
-fun Choice(label:String,checked:Boolean,description:String="",onClick:()->Unit) {
-    Row(Modifier.fillMaxWidth().clickable(onClick=onClick).padding(vertical=8.dp),verticalAlignment=Alignment.CenterVertically){
-        RadioButton(checked,onClick=onClick)
+fun Choice(label:String,checked:Boolean,description:String="",enabled:Boolean=true,onClick:()->Unit) {
+    Row(Modifier.fillMaxWidth().clickable(enabled=enabled,onClick=onClick).padding(vertical=8.dp),verticalAlignment=Alignment.CenterVertically){
+        RadioButton(checked,onClick=onClick,enabled=enabled)
         Column(Modifier.weight(1f)){LText(label,style=MaterialTheme.typography.bodyLarge);if(description.isNotEmpty())LText(description,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)}
     }
 }
@@ -51,6 +51,7 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onPickTre
         mode=="appearance"->"外观"
         mode=="quality"->"备份画质"
         mode=="live-photo"->"实况照片配对"
+        mode=="edit-policy"->"版本保留"
         mode=="proxy"->"代理"
         mode=="album"->"相册归类"
         mode=="custom-album"->"自定义相册"
@@ -111,6 +112,12 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onPickTre
                     Choice("节省空间",data.settings.quality=="saver","可能压缩照片和视频"){vm.setString("quality","saver")}
                     Choice("原始画质（计入配额）",data.settings.quality=="quota","使用 Google 账号存储空间"){vm.setString("quality","quota")}
                     Helper("存储空间是否计入配额，以 Google 相册实际处理结果为准。")
+                }
+                mode=="edit-policy"->{
+                    Choice("原始与编辑后均保留",data.settings.editPolicy=="both"){vm.setString("editPolicy","both")}
+                    Choice("仅原始版本",data.settings.editPolicy=="original","当前图库未提供可验证的编辑前版本",enabled=false){}
+                    Choice("仅编辑后版本",data.settings.editPolicy=="current"){vm.setString("editPolicy","current")}
+                    Helper("当前图库接口提供当前文件，不能枚举编辑历史。另存的原图与编辑副本会作为独立文件保留；不会按文件名猜测版本关系。")
                 }
                 mode=="live-photo"->{
                     Choice("原始照片配对（分步上传）",data.settings.livePhotoPairing=="stepwise","先保存照片，再关联动态视频"){vm.setString("livePhotoPairing","stepwise")}

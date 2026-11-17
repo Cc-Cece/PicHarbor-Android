@@ -133,7 +133,15 @@ class SourceHandle(val path:String, val size:Long, private val input:android.os.
 class SourceBridge(private val context:Context) {
     fun open(uri:String,name:String):SourceHandle {
         Diagnostics.event("source.open_requested",attrs=org.json.JSONObject().put("source_kind",if(uri.startsWith("content://media/"))"media_store" else "document_provider").put("filename",name))
-        val descriptor=context.contentResolver.openFileDescriptor(Uri.parse(uri),"r") ?: throw SecurityException("NO_ACCESS")
+        val address=Uri.parse(uri)
+        val descriptor=if(Build.VERSION.SDK_INT>=31&&address.authority==MediaStore.AUTHORITY) {
+            val options=android.os.Bundle().apply{putBoolean(MediaStore.EXTRA_ACCEPT_ORIGINAL_MEDIA_FORMAT,true)}
+            context.contentResolver.openTypedAssetFileDescriptor(address,"*/*",options)?.use { asset ->
+                if(asset.startOffset!=0L)throw SecurityException("UNSUPPORTED_SOURCE_OFFSET")
+                android.os.ParcelFileDescriptor.dup(asset.fileDescriptor)
+            }
+        } else context.contentResolver.openFileDescriptor(address,"r")
+        if(descriptor==null)throw SecurityException("NO_ACCESS")
         val path="/proc/self/fd/${descriptor.fd}"
         try {
             val size=descriptor.statSize

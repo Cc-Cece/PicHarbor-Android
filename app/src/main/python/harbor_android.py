@@ -342,18 +342,19 @@ class MobileService:
             if not identifiers[0] or identifiers[0]!=identifiers[1]:
                 return {'state':'failed','error':'LIVE_PAIR_METADATA_MISMATCH'}
             if value.get('strategy') == 'motion':
-                from gpmc.motion_photo import mux_jpeg
-                destination=folder/(task+'.motion.jpg')
+                from gpmc.motion_photo import mux_motion, motion_format
+                extension=motion_format(paths['photo'])
+                destination=folder/(task+'.motion.'+extension)
                 temporary=folder/(task+'.motion.part')
                 temporary.unlink(missing_ok=True)
                 try:
-                    mux_jpeg(paths['photo'],paths['video'],temporary,value.get('keyframe_us'))
+                    mux_motion(paths['photo'],paths['video'],temporary,value.get('keyframe_us'))
                     for role in ('photo','video'):
                         if self.hashes(paths[role],callback)!={key:resources[role][key] for key in ('sha1','sha256','size')}:
                             return {'state':'failed','error':'SOURCE_CHANGED'}
                     temporary.replace(destination)
                 finally:temporary.unlink(missing_ok=True)
-                result=self.process({'uri':destination.as_uri(),'name':Path(value['photo']['name']).stem+'_MP.jpg',
+                result=self.process({'uri':destination.as_uri(),'name':Path(value['photo']['name']).stem+'_MP.'+extension,
                     'quality':value.get('quality','original'),'album_mode':'none','modified':value.get('modified',0),'retries':value.get('retries',3)},bridge,callback)
                 if result.get('state') in ('done','exists'):
                     key=self.client.api.find_remote_media_by_hash(bytes.fromhex(result['sha1']))

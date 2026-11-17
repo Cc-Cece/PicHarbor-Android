@@ -27,6 +27,11 @@ data class TransferProgress(val job:String="",val item:String="",val name:String
 data class CleanupEvidenceItem(val taskId:String,val mediaId:String,val cloudConfirmed:Boolean,val confirmedAt:Long)
 
 class BackupRepository(private val graph:AppGraph) {
+    private suspend fun requireAvailableVersions(policy:String) {
+        val result=graph.harborCore.dispatch("select_versions",JSONObject().put("policy",policy)
+            .put("available",org.json.JSONArray().put("current")).put("has_edits",JSONObject.NULL))
+        if(!result.optBoolean("ok"))throw EngineFailure(result.optString("error","ENGINE_ERROR"))
+    }
     private val suspendedItems=java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val cancelledItems=java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     suspend fun itemAction(id:String,action:String) {
@@ -153,6 +158,7 @@ class BackupRepository(private val graph:AppGraph) {
         if(graph.switching.value)throw EngineFailure("ACCOUNT_CHANGED")
         val settings=graph.preferences.get()
         if(settings.account.isEmpty())throw EngineFailure("LOGIN_REQUIRED")
+        requireAvailableVersions(settings.editPolicy)
         val known=graph.dao.backups(settings.account).associateBy{it.mediaId}
         val allMedia=identifiedMedia()
         val explicit=ids?.map { id -> allMedia.firstOrNull{it.id==id}?.takeIf{it.video}?.let{LivePhotoPairing.findPhotoPartner(it,allMedia)?.id}?:id }?.toSet()
@@ -532,6 +538,9 @@ class BackupRepository(private val graph:AppGraph) {
         if(graph.dao.item(item.id)?.state !in setOf("queued","album_pending","waiting_confirmation","hashing","checking","uploading","finalizing","finalizing_album"))return
         val all=identifiedMedia()
         val identified=all.firstOrNull{it.id==media.id}?:media
+        try {requireAvailableVersions(job.editPolicy)} catch(error:EngineFailure) {
+            graph.dao.putItem(item.copy(state="failed",error=error.code,attempt=item.attempt+1));return
+        }
         val embeddedMotion=identified.pairingID==LivePhotoPairing.EMBEDDED_MOTION
         val group=LivePhotoPairing.groupFor(identified,all,job.liveStrategy,embeddedMotion)
         if(identified.pairingID.isNotBlank()&&!embeddedMotion&&group?.video==null) {
