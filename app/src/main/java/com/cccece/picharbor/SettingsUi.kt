@@ -28,6 +28,7 @@ fun SettingsScreen(vm:HarborViewModel,data:HarborUiData) {
         Column(Modifier.padding(horizontal=20.dp)) {
             LText("让备份，\n成为一件小事。",style=MaterialTheme.typography.headlineLarge,modifier=Modifier.padding(vertical=18.dp))
             SettingGroup {
+                SettingsRow("并发模式",if(s.pipelineMode=="custom")"自定义" else "自动",Icons.Outlined.Tune,onClick={vm.navigate("pipeline")})
                 ToggleRow("自动备份","备份选定文件夹中的新增内容",s.auto,Icons.Outlined.CloudUpload,!vm.busy){vm.setBoolean("auto",it)}
                 SettingsRow("备份账号",s.account.ifEmpty{"尚未登录"},Icons.Outlined.PersonOutline,onClick={vm.sheet="account"})
                 SettingsRow("备份画质",qualityName(s.quality),Icons.Outlined.Image,onClick={vm.sheet="quality"})
@@ -48,6 +49,7 @@ fun SettingsScreen(vm:HarborViewModel,data:HarborUiData) {
                 if(s.scheduled)SettingsRow("备份时间","每天 ${s.time} 附近",Icons.Outlined.Schedule,onClick={vm.sheet="time"})
             }
             Helper("系统省电、网络和充电条件可能使任务延后。后台检查不会要求手机一直亮屏。")
+            SettingsRow("高级备份检查","动态处理与云端确认",Icons.Outlined.Verified,onClick={vm.navigate("checks")})
         }
     }
 }
@@ -75,7 +77,7 @@ fun FoldersScreen(vm:HarborViewModel,data:HarborUiData,onPermissions:()->Unit,on
         val lostTrees=data.settings.trees.filter{tree->folders.none{it.key==tree}}
         items(lostTrees){tree->Box(Modifier.padding(horizontal=20.dp)){SettingsRow("已授权文件夹暂不可用","可能为空、存储卡已拔出或权限失效",Icons.Outlined.SdStorage,onClick={vm.sheet="sd"})}}
         item{Column(Modifier.padding(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
-            OutlinedButton(onClick={vm.sheet="sd"},modifier=Modifier.fillMaxWidth()){Icon(Icons.Outlined.CreateNewFolder,null);Spacer(Modifier.width(8.dp));LText("添加文件夹 / SD 卡")}
+            OutlinedButton(onClick={vm.sheet="sd"},modifier=Modifier.fillMaxWidth()){LIcon(Icons.Outlined.CreateNewFolder,null);Spacer(Modifier.width(8.dp));LText("添加文件夹 / SD 卡")}
             if(!data.settings.onboarded)Button(onClick=vm::finishSetup,enabled=!vm.busy&&data.settings.account.isNotEmpty(),modifier=Modifier.fillMaxWidth()){LText("开启自动备份")}
             else FilledTonalButton(onClick={vm.start()},enabled=!vm.busy,modifier=Modifier.fillMaxWidth()){LText(if(data.settings.allFolders)"备份所有文件夹" else "备份已选文件夹")}
             Helper("默认包含全部已授权内容，也可选择相簿。授权失效时会停止读取，不会自动删除文件。",Icons.Outlined.Security)
@@ -142,7 +144,7 @@ fun HistoryScreen(vm:HarborViewModel,data:HarborUiData) {
             val completed=stats?.succeeded?:0;val errors=stats?.failed?:0
             Surface(color=MaterialTheme.colorScheme.surfaceContainerLow,shape=MaterialTheme.shapes.large,modifier=Modifier.padding(horizontal=20.dp,vertical=5.dp)){
                 Column(Modifier.fillMaxWidth().padding(18.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-                    Row(verticalAlignment=Alignment.CenterVertically){Icon(if(errors>0)Icons.Outlined.ErrorOutline else Icons.Outlined.CloudDone,null,tint=MaterialTheme.colorScheme.primary);Spacer(Modifier.width(12.dp));LText(if(job.automatic)"自动备份" else "手动备份",style=MaterialTheme.typography.titleMedium,modifier=Modifier.weight(1f));LText(jobLabel(job.state),style=MaterialTheme.typography.labelMedium)}
+                    Row(verticalAlignment=Alignment.CenterVertically){LIcon(if(errors>0)Icons.Outlined.ErrorOutline else Icons.Outlined.CloudDone,null,tint=MaterialTheme.colorScheme.primary);Spacer(Modifier.width(12.dp));LText(if(job.automatic)"自动备份" else "手动备份",style=MaterialTheme.typography.titleMedium,modifier=Modifier.weight(1f));LText(jobLabel(job.state),style=MaterialTheme.typography.labelMedium)}
                     LText(Instant.ofEpochMilli(job.created).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("M月d日 HH:mm")),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     LText("成功 $completed · 失败 $errors · 共 ${stats?.total?:0} 项",style=MaterialTheme.typography.bodyMedium)
                     if((stats?.skipped?:0)>0)LText("同名跳过 ${stats?.skipped} 项，内容尚未确认",style=MaterialTheme.typography.bodySmall)

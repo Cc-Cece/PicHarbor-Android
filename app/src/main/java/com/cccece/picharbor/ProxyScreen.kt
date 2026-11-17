@@ -35,44 +35,44 @@ fun ProxyScreen(vm:HarborViewModel,data:HarborUiData) {
                 TextButton(onClick={vm.scanQr("proxy",false)}){LText("扫描二维码")}
                 TextButton(onClick={vm.scanQr("proxy",true)}){LText("从图片识别")}
             }
-            Button(onClick={vm.action{proxy.download(url,name);url="";text=""}},enabled=!vm.busy&&url.isNotBlank()){LText("下载并添加")}
+            Button(onClick={vm.proxyAction{proxy.download(url,name);url="";text=""}},enabled=!vm.busy&&url.isNotBlank()){LText("下载并添加")}
             TextButton(onClick={imported=!imported}){LText("粘贴配置")}
             if(imported){
                 OutlinedTextField(text,{text=it},label={LText("Clash YAML / JSON")},minLines=4,maxLines=10,modifier=Modifier.fillMaxWidth())
-                Button(onClick={vm.action{proxy.importText(text,name);text="";imported=false}},enabled=!vm.busy&&text.isNotBlank()){LText("保存配置")}
+                Button(onClick={vm.proxyAction{proxy.importText(text,name);text="";imported=false}},enabled=!vm.busy&&text.isNotBlank()){LText("保存配置")}
             }
             val profiles=library.getJSONArray("profiles")
             for(i in 0 until profiles.length()) {
                 val profile=profiles.getJSONObject(i)
                 val active=library.optString("active")==profile.getString("id")
                 Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp)) {
-                    LText(profile.getString("name"),style=MaterialTheme.typography.titleMedium)
+                    LText(profile.getString("name"),localize=false,style=MaterialTheme.typography.titleMedium)
                     LText("${profile.getJSONArray("nodes").length()} 个节点${if(active)" · 正在使用" else ""}")
                     Row {
-                        TextButton(onClick={vm.action{proxy.activate(profile.getString("id"))}},enabled=!vm.busy&&!active){LText("使用此配置")}
-                        if(profile.optString("url").isNotBlank())TextButton(onClick={vm.action{proxy.download(profile.getString("url"),profile.getString("name"),profile.getString("id"))}},enabled=!vm.busy){LText("更新订阅")}
-                        TextButton(onClick={vm.action{proxy.remove(profile.getString("id"))}},enabled=!vm.busy){LText("移除")}
+                        TextButton(onClick={vm.proxyAction{proxy.activate(profile.getString("id"))}},enabled=!vm.busy&&!active){LText("使用此配置")}
+                        if(profile.optString("url").isNotBlank())TextButton(onClick={vm.proxyAction{proxy.download(profile.getString("url"),profile.getString("name"),profile.getString("id"))}},enabled=!vm.busy){LText("更新订阅")}
+                        TextButton(onClick={vm.proxyAction{proxy.remove(profile.getString("id"))}},enabled=!vm.busy){LText("移除")}
                     }
                 } }
             }
             SectionLabel("节点选择与切换")
             Row {
-                RadioButton(library.optString("selection","automatic")=="automatic",onClick={vm.action{proxy.policy("selection","automatic")}});LText("自动")
-                RadioButton(library.optString("selection")=="manual",onClick={vm.action{proxy.policy("selection","manual")}});LText("手动")
+                RadioButton(library.optString("selection","automatic")=="automatic",onClick={vm.proxyAction{proxy.policy("selection","automatic")}});LText("自动")
+                RadioButton(library.optString("selection")=="manual",onClick={vm.proxyAction{proxy.policy("selection","manual")}});LText("手动")
             }
-            ToggleRow("所有节点不可用时允许直连","关闭时等待连接，不自动绕过代理",library.optString("exhaustion")=="direct",enabled=!vm.busy){vm.action{proxy.policy("exhaustion",if(it)"direct" else "wait")}}
+            ToggleRow("所有节点不可用时允许直连","关闭时等待连接，不自动绕过代理",library.optString("exhaustion")=="direct",enabled=!vm.busy){vm.proxyAction{proxy.policy("exhaustion",if(it)"direct" else "wait")}}
             proxy.profile()?.getJSONArray("nodes")?.let { nodes ->
                 for(i in 0 until nodes.length()) {
                     val nodeName=nodes.getJSONObject(i).getString("name");val h=health[nodeName]
                     Row {
-                        RadioButton(library.optString("primary")==nodeName,onClick={vm.action{proxy.policy("primary",nodeName);proxy.policy("selection","manual")}})
-                        Column {LText(nodeName);LText(if(h==null)"未测速" else if(!h.healthy)"不可用" else "${h.milliseconds} 毫秒",style=MaterialTheme.typography.bodySmall)}
+                        RadioButton(library.optString("primary")==nodeName,onClick={vm.proxyAction{proxy.policy("primary",nodeName);proxy.policy("selection","manual")}})
+                        Column {LText(nodeName,localize=false);LText(if(h==null)"未测速" else if(!h.healthy)"不可用" else "${h.milliseconds} 毫秒",style=MaterialTheme.typography.bodySmall)}
                     }
                     if(library.optString("selection")=="manual"&&library.optString("primary")!=nodeName) {
                         val backups=library.optJSONArray("backups")?:org.json.JSONArray()
                         val names=(0 until backups.length()).map{backups.getString(it)}
                         Row {
-                            Checkbox(nodeName in names,onCheckedChange={checked->vm.action{proxy.backups(if(checked)names+nodeName else names-nodeName)}})
+                            Checkbox(nodeName in names,onCheckedChange={checked->vm.proxyAction{proxy.backups(if(checked)names+nodeName else names-nodeName)}})
                             LText("备用节点")
                         }
                     }

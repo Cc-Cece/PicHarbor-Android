@@ -151,6 +151,7 @@ class LiveLinkTransport(private val graph:AppGraph) {
         for(media in logical(all)) {
             val paired=LivePhotoPairing.findPair(media,all)!=null
             val asset=LiveLink.assetJson(media.id,media.name,media.size,if(paired)"live_photo" else if(media.video)"video" else "photo",media.captured,media.folderKey)
+                .put("albums",JSONArray(LivePhotoPairing.folders(media,all).toList()))
                 .put("created_at",java.time.Instant.ofEpochMilli(media.captured).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString())
                 .put("in_default_album",media.source=="media"&&(media.folderName.equals("Camera",true)||media.folderName.equals("Screenshots",true)))
             if(media.captured<=0)asset.remove("created_at")

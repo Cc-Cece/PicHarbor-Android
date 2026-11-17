@@ -48,21 +48,35 @@ object LivePhotoPairing {
         return base.substringBeforeLast('.', base)
     }
 
-    /**
-     * Finds the video partner of [photo]: same stem, same folder, captured
-     * within the pairing window; the closest capture time wins. Pure over
-     * the media list, so it is unit-testable without a device.
-     */
+    private val indexes=mutableListOf<Pair<java.lang.ref.WeakReference<List<MediaEntry>>,Map<String,List<MediaEntry>>>>()
+    @Synchronized
+    private fun index(all:List<MediaEntry>):Map<String,List<MediaEntry>> {
+        indexes.removeAll{it.first.get()==null}
+        indexes.firstOrNull{it.first.get()===all}?.let{return it.second}
+        val value=all.filter{it.pairingID.isNotEmpty()&&it.pairingID!=EMBEDDED_MOTION}.groupBy{it.pairingID}
+        if(indexes.size>=2)indexes.removeAt(0)
+        indexes.add(java.lang.ref.WeakReference(all) to value)
+        return value
+    }
+    /** Only explicit identifiers establish a pair; time breaks ties between copies. */
     fun findPair(photo: MediaEntry, all: List<MediaEntry>): MediaEntry? =
-        all.filter { it.video && it.id != photo.id &&
-            photo.pairingID.isNotEmpty() && it.pairingID == photo.pairingID }
+        (if(photo.pairingID.isEmpty()||photo.pairingID==EMBEDDED_MOTION)emptyList() else index(all)[photo.pairingID].orEmpty()).filter { it.video && it.id != photo.id }
             .minByOrNull { kotlin.math.abs(it.captured - photo.captured) }
 
     /** Finds the photo partner of a video (the symmetric lookup). */
     fun findPhotoPartner(video: MediaEntry, all: List<MediaEntry>): MediaEntry? =
-        all.filter { !it.video && it.id != video.id &&
-            video.pairingID.isNotEmpty() && it.pairingID == video.pairingID }
+        (if(video.pairingID.isEmpty())emptyList() else index(all)[video.pairingID].orEmpty()).filter { !it.video && it.id != video.id }
             .minByOrNull { kotlin.math.abs(it.captured - video.captured) }
+
+    fun logical(all:List<MediaEntry>)=all.filter{!it.video||findPhotoPartner(it,all)==null}
+    fun folders(media:MediaEntry,all:List<MediaEntry>):Set<String> = setOfNotNull(media.folderKey,
+        (if(media.video)findPhotoPartner(media,all) else findPair(media,all))?.folderKey)
+    fun backed(media:MediaEntry,all:List<MediaEntry>,records:Map<String,BackupRecord>):Boolean {
+        val own=records[media.id]
+        if(!BackupPolicy.matches(media,own))return false
+        val partner=if(media.video)findPhotoPartner(media,all) else findPair(media,all)
+        return partner==null||BackupPolicy.matches(partner,records[partner.id])&&own?.remoteKey==records[partner.id]?.remoteKey
+    }
 
     /**
      * Groups [media] as a Live Photo when it qualifies, or null when it is

@@ -25,7 +25,8 @@ data class BackupJob(
     val state: String = "queued", val completedAt: Long = 0, val allowMobile: Boolean = false,
     val albumMode: String = "none", val albumValue: String = "", val quality: String = "original",
     val archivedAt: Long = 0, val hidden: Boolean = false, val unarchivedAt: Long = 0,
-    val liveStrategy: String = "original", val editPolicy: String = "both", val proxyPolicy: String = "", val manualPriority: Boolean = false
+    val liveStrategy: String = "original", val editPolicy: String = "both", val proxyPolicy: String = "", val manualPriority: Boolean = false,
+    val strictConfirmation:Boolean=false
 )
 
 @Entity(tableName = "items", indices = [Index("jobId"), Index("account"), Index(value = ["jobId", "mediaId"], unique = true)])
@@ -34,7 +35,7 @@ data class BackupItem(
     val name: String, val bytes: Long, val state: String = "queued", val remoteKey: String = "",
     val sha1: String = "", val sha256: String = "", val modified: Long = 0,
     val origin: String = "", val error: String = "", val attempt: Int = 0, val hidden: Boolean = false,
-    val archivedAt: Long = 0, val unarchivedAt: Long = 0
+    val archivedAt: Long = 0, val unarchivedAt: Long = 0, val confirmationElapsedMs:Long=0, val completedAt:Long=0
 )
 
 data class JobStatistics(val jobId:String,val total:Int,val succeeded:Int,val failed:Int,val skipped:Int,val bytes:Long,val finished:Int=0)
@@ -72,6 +73,7 @@ interface HarborDao {
     @Query("UPDATE media SET pairingID=:pairingID WHERE id=:id AND modified=:modified AND size=:size")
     suspend fun updatePairingID(id:String,modified:Long,size:Long,pairingID:String)
     @Query("DELETE FROM media WHERE id=:id") suspend fun removeMedia(id: String)
+    @Query("DELETE FROM media WHERE source=:source") suspend fun removeMediaSource(source:String)
     @Query("DELETE FROM media WHERE seenAt != :stamp AND source IN (:sources)") suspend fun finishScan(stamp: Long, sources: List<String>)
     @Query("SELECT * FROM backups WHERE account=:account") fun backupsFlow(account: String): Flow<List<BackupRecord>>
     @Query("SELECT * FROM backups WHERE account=:account") suspend fun backups(account: String): List<BackupRecord>
@@ -104,13 +106,35 @@ interface HarborDao {
     @Query("SELECT COUNT(*) FROM jobs WHERE account=:account AND automatic=0 AND state IN ('queued','running','waiting')") suspend fun pendingManual(account:String):Int
     @Query("UPDATE jobs SET state='paused' WHERE account=:account AND state IN ('queued','running','waiting','pausing')") suspend fun pauseAccountJobs(account:String)
     @Upsert suspend fun putItems(items: List<BackupItem>)
-    @Upsert suspend fun putItem(item: BackupItem)
+    @Upsert suspend fun persistItem(item: BackupItem)
+    @Transaction suspend fun putItem(item:BackupItem) {
+        persistItem(if(item.state in setOf("done","exists")&&item.completedAt==0L)item.copy(completedAt=System.currentTimeMillis()) else item)
+    }
+    @Query("UPDATE items SET archivedAt=:now WHERE account=:account AND archivedAt=0 AND completedAt>0 AND completedAt<=:cutoff AND unarchivedAt<=:cutoff AND state IN ('done','exists')")
+    suspend fun archiveEligible(account:String,cutoff:Long,now:Long)
 }
 
-@Database(entities = [MediaEntry::class, BackupRecord::class, BackupJob::class, BackupItem::class, CoreTaskSnapshot::class, SuppressedAsset::class], version = 6, exportSchema = true)
+@Database(entities = [MediaEntry::class, BackupRecord::class, BackupJob::class, BackupItem::class, CoreTaskSnapshot::class, SuppressedAsset::class], version = 9, exportSchema = true)
 abstract class HarborDatabase : RoomDatabase() {
     abstract fun dao(): HarborDao
     companion object {
+        val MIGRATION_8_9=object:androidx.room.migration.Migration(8,9) {
+            override fun migrate(db:androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE items ADD COLUMN completedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("UPDATE items SET completedAt=COALESCE((SELECT NULLIF(completedAt,0) FROM jobs WHERE jobs.id=items.jobId),(SELECT verifiedAt FROM backups WHERE backups.account=items.account AND backups.mediaId=items.mediaId),0) WHERE state IN ('done','exists')")
+                db.execSQL("UPDATE items SET archivedAt=0 WHERE state NOT IN ('done','exists')")
+            }
+        }
+        val MIGRATION_7_8=object:androidx.room.migration.Migration(7,8) {
+            override fun migrate(db:androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE items ADD COLUMN confirmationElapsedMs INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+        val MIGRATION_6_7=object:androidx.room.migration.Migration(6,7) {
+            override fun migrate(db:androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE jobs ADD COLUMN strictConfirmation INTEGER NOT NULL DEFAULT 0")
+            }
+        }
         val MIGRATION_5_6=object:androidx.room.migration.Migration(5,6) {
             override fun migrate(db:androidx.sqlite.db.SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE media ADD COLUMN pairingID TEXT NOT NULL DEFAULT ''")
@@ -164,7 +188,7 @@ abstract class HarborDatabase : RoomDatabase() {
                 db.execSQL("DROP TABLE IF EXISTS cleanups")
             }
         }
-        fun open(context: Context) = Room.databaseBuilder(context, HarborDatabase::class.java, "picharbor.db").addMigrations(MIGRATION_1_2,MIGRATION_2_3,MIGRATION_3_4,MIGRATION_4_5,MIGRATION_5_6).build()
+        fun open(context: Context) = Room.databaseBuilder(context, HarborDatabase::class.java, "picharbor.db").addMigrations(MIGRATION_1_2,MIGRATION_2_3,MIGRATION_3_4,MIGRATION_4_5,MIGRATION_5_6,MIGRATION_6_7,MIGRATION_7_8,MIGRATION_8_9).build()
     }
 }
 

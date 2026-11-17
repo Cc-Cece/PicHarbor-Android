@@ -53,13 +53,13 @@ fun MediaStatusRow(name:String,description:String,media:MediaEntry?,onClick:()->
     Row(Modifier.fillMaxWidth().clickable(onClick=onClick).padding(horizontal=20.dp,vertical=10.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(14.dp)) {
         Box(Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh),contentAlignment=Alignment.Center) {
             if(media!=null)AsyncImage(ImageRequest.Builder(LocalContext.current).data(Uri.parse(media.id)).size(160).memoryCacheKey("${media.id}:${media.modified}:${media.size}").build(),null,Modifier.fillMaxSize(),contentScale=ContentScale.Crop,error=rememberVectorPainter(Icons.Outlined.BrokenImage))
-            else Icon(Icons.Outlined.BrokenImage,null,Modifier.size(28.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant)
-            if(media?.video==true)Icon(Icons.Outlined.PlayCircle,null,Modifier.align(Alignment.BottomEnd).size(24.dp),tint=MaterialTheme.colorScheme.primary)
+            else LIcon(Icons.Outlined.BrokenImage,null,Modifier.size(28.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant)
+            if(media?.video==true)LIcon(Icons.Outlined.PlayCircle,null,Modifier.align(Alignment.BottomEnd).size(24.dp),tint=MaterialTheme.colorScheme.primary)
         }
         Column(Modifier.weight(1f)) {
             LText(name,style=MaterialTheme.typography.bodyMedium,maxLines=2)
             LText(description,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Icon(Icons.Outlined.ChevronRight,null)
+        LIcon(Icons.Outlined.ChevronRight,null)
     }
 }

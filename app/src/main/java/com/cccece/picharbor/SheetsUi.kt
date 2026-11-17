@@ -72,7 +72,7 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onPickTre
     }
     ModalBottomSheet(onDismissRequest={vm.sheet=""},sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true)) {
         Column(Modifier.fillMaxWidth().heightIn(max=640.dp).verticalScroll(rememberScrollState()).padding(start=24.dp,end=24.dp,bottom=32.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-            Row(verticalAlignment=Alignment.CenterVertically){LText(title,style=MaterialTheme.typography.headlineSmall,modifier=Modifier.weight(1f));IconButton(onClick={vm.sheet=""}){Icon(Icons.Outlined.Close,"关闭")}}
+            Row(verticalAlignment=Alignment.CenterVertically){LText(title,style=MaterialTheme.typography.headlineSmall,modifier=Modifier.weight(1f));IconButton(onClick={vm.sheet=""}){LIcon(Icons.Outlined.Close,"关闭")}}
             when {
                 mode=="account"||mode=="login"->{
                     LText("选择备份使用的账号",style=MaterialTheme.typography.bodyMedium)
@@ -86,12 +86,12 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onPickTre
                                     LText(account.email,style=MaterialTheme.typography.bodySmall,maxLines=1,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                                     LText(if(account.email==data.settings.account)"当前备份账号" else if(account.needsLogin)"需要重新登录" else "点按快速切换",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
-                                if(account.email==data.settings.account)Icon(Icons.Outlined.CheckCircle,"当前账号",tint=MaterialTheme.colorScheme.primary)
-                                IconButton(onClick={vm.sheet="remove-account:${account.email}"},enabled=!vm.busy){Icon(Icons.Outlined.PersonRemove,"从设备移除此账号")}
+                                if(account.email==data.settings.account)LIcon(Icons.Outlined.CheckCircle,"当前账号",tint=MaterialTheme.colorScheme.primary)
+                                IconButton(onClick={vm.sheet="remove-account:${account.email}"},enabled=!vm.busy){LIcon(Icons.Outlined.PersonRemove,"从设备移除此账号")}
                             }
                         }
                     }
-                    Button(onClick={vm.switchAccount(onLogin)},enabled=!vm.busy,modifier=Modifier.fillMaxWidth()){Icon(Icons.Outlined.Add,null);LText("添加 Google 账号")}
+                    Button(onClick={vm.switchAccount(onLogin)},enabled=!vm.busy,modifier=Modifier.fillMaxWidth()){LIcon(Icons.Outlined.Add,null);LText("添加 Google 账号")}
                     if(data.settings.account.isNotEmpty())TextButton(onClick=vm::checkAccount,enabled=!vm.busy){LText("检查当前账号连接")}
                     Helper("每个账号分别保存登录凭据、备份范围与记录。自动备份只使用当前账号。",Icons.Outlined.Security)
                 }

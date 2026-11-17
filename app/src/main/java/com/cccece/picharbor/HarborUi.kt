@@ -50,14 +50,15 @@ import java.util.Locale
 
 data class HarborUiData(val settings:HarborSettings,val media:List<MediaEntry>,val backups:List<BackupRecord>,val jobs:List<BackupJob>,
     val items:List<BackupItem>,val transfer:TransferProgress,val activeJob:String,
+    val logicalMedia:List<MediaEntry> = LivePhotoPairing.logical(media),
     val backupMap:Map<String,BackupRecord> = backups.filter{it.account==settings.account}.associateBy{it.mediaId},
     val itemMap:Map<String,BackupItem> = items.filter{it.account==settings.account}.asReversed().associateBy{it.mediaId},
-    val scope:List<MediaEntry> = media.filter{settings.includes(it)},
-    val pending:List<MediaEntry> = scope.filterNot{BackupPolicy.matches(it,backupMap[it.id])},
-    val doneCount:Int = media.count{BackupPolicy.matches(it,backupMap[it.id])},val statistics:List<JobStatistics> = emptyList()) {
+    val scope:List<MediaEntry> = logicalMedia.filter{settings.includes(it)||!it.video&&LivePhotoPairing.findPair(it,media)?.let{pair->settings.includesFolder(pair)}==true},
+    val pending:List<MediaEntry> = scope.filterNot{LivePhotoPairing.backed(it,media,backupMap)},
+    val doneCount:Int = logicalMedia.count{LivePhotoPairing.backed(it,media,backupMap)},val statistics:List<JobStatistics> = emptyList()) {
     val statisticsMap=statistics.associateBy{it.jobId}
     val attentionItems=itemMap.values.filter{it.state in setOf("failed","album_pending")}.sortedBy{it.name}
-    fun backed(m:MediaEntry)=backupMap[m.id]?.account==settings.account && BackupPolicy.matches(m,backupMap[m.id])
+    fun backed(m:MediaEntry)=backupMap[m.id]?.account==settings.account && LivePhotoPairing.backed(m,media,backupMap)
     fun status(m:MediaEntry):String {
         if(settings.account.isEmpty())return "unknown"
         val task=itemMap[m.id]?.takeIf{it.account==settings.account}
@@ -95,8 +96,10 @@ fun HarborRoot(vm:HarborViewModel,onLogin:()->Unit,onPermissions:()->Unit,onPick
     val hasStatus=topBackupJob(data)!=null
     val snackbar=remember{SnackbarHostState()}
     val pageState=rememberSaveableStateHolder()
-    LaunchedEffect(vm.message){if(vm.message.isNotBlank()){snackbar.showSnackbar(vm.message);vm.clearMessage()}}
-    LaunchedEffect(notice){if(notice.isNotBlank())snackbar.showSnackbar(notice)}
+    val messageText=localize(vm.message)
+    val noticeText=localize(notice)
+    LaunchedEffect(messageText){if(messageText.isNotBlank()){snackbar.showSnackbar(messageText);vm.clearMessage()}}
+    LaunchedEffect(noticeText){if(noticeText.isNotBlank())snackbar.showSnackbar(noticeText)}
     BackHandler(vm.page!="photos"||vm.sheet.isNotEmpty()||vm.selectionMode){vm.back()}
     PicHarborTheme(settings) {
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -124,6 +127,8 @@ fun HarborRoot(vm:HarborViewModel,onLogin:()->Unit,onPermissions:()->Unit,onPick
                                 "activity"->ActivityScreen(vm,data)
                                 "settings"->UnifiedSettingsScreen(vm,data,onPermissions,onExport)
                                 "preferences"->SettingsScreen(vm,data)
+                                "checks"->ConfirmationSettingsScreen(vm,data)
+                                "pipeline"->PipelineSettingsScreen(vm,data)
                                 "archive-settings"->ArchiveSettingsScreen(vm,data)
                                 "interface"->InterfaceScreen(vm,data)
                                 "proxy"->ProxyScreen(vm,data)
@@ -150,7 +155,7 @@ fun HarborRoot(vm:HarborViewModel,onLogin:()->Unit,onPermissions:()->Unit,onPick
                 androidx.compose.animation.AnimatedVisibility(visible=vm.page in rootPages,modifier=Modifier.align(Alignment.BottomCenter),enter=fadeIn(tween(220)),exit=fadeOut(tween(180))) {
                     NavigationBar(modifier=Modifier.onSizeChanged{measuredBar=it.height},containerColor=MaterialTheme.colorScheme.surfaceContainerLow) {
                         listOf(Triple("photos",Icons.Outlined.PhotoLibrary,"\u7167\u7247"),Triple("backup",Icons.Outlined.Cloud,"\u5907\u4efd"),Triple("activity",Icons.Outlined.History,"活动"),Triple("settings",Icons.Outlined.Settings,"设置")).forEach{(route,icon,label)->
-                            NavigationBarItem(selected=(if(vm.page in rootPages)vm.page else lastRoot)==route,onClick={if(vm.page!=route)vm.tab(route)},icon={Icon(icon,label)},label={LText(label)})
+                            NavigationBarItem(selected=(if(vm.page in rootPages)vm.page else lastRoot)==route,onClick={if(vm.page!=route)vm.tab(route)},icon={LIcon(icon,label)},label={LText(label)})
                         }
                     }
                 }
@@ -170,15 +175,15 @@ fun HarborRoot(vm:HarborViewModel,onLogin:()->Unit,onPermissions:()->Unit,onPick
 fun PageTitle(title:String,vm:HarborViewModel,root:Boolean=false,action:@Composable RowScope.()->Unit={}) {
     if(root)Row(Modifier.fillMaxWidth().padding(start=24.dp,end=16.dp,top=18.dp,bottom=16.dp),verticalAlignment=Alignment.CenterVertically) {
         LText(title,style=MaterialTheme.typography.headlineLarge,color=MaterialTheme.colorScheme.onBackground,modifier=Modifier.weight(1f));action()
-    } else TopAppBar(title={LText(title)},navigationIcon={IconButton(onClick=vm::back){Icon(Icons.Outlined.ArrowBack,"返回")}},actions=action)
+    } else TopAppBar(title={LText(title)},navigationIcon={IconButton(onClick=vm::back){LIcon(Icons.Outlined.ArrowBack,"返回")}},actions=action)
 }
 @Composable
 fun SettingsRow(title:String,subtitle:String="",icon:ImageVector?=null,enabled:Boolean=true,onClick:()->Unit,trailing:@Composable (()->Unit)?=null) {
     Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow).clickable(enabled=enabled,onClick=onClick)
         .padding(horizontal=18.dp,vertical=15.dp).heightIn(min=40.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(14.dp)) {
-        if(icon!=null)Icon(icon,null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.size(23.dp))
+        if(icon!=null)LIcon(icon,null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.size(23.dp))
         Column(Modifier.weight(1f)){LText(title,style=MaterialTheme.typography.bodyLarge,color=MaterialTheme.colorScheme.onSurface);if(subtitle.isNotEmpty())LText(subtitle,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=3.dp))}
-        if(trailing!=null)trailing() else Icon(Icons.Outlined.ChevronRight,null,tint=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.size(19.dp))
+        if(trailing!=null)trailing() else LIcon(Icons.Outlined.ChevronRight,null,tint=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.size(19.dp))
     }
 }
 @Composable
@@ -191,14 +196,14 @@ fun SettingGroup(content:@Composable ColumnScope.()->Unit){Column(Modifier.fillM
 fun SectionLabel(label:String){LText(label,style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.primary,modifier=Modifier.padding(start=5.dp,top=24.dp,bottom=12.dp))}
 @Composable
 fun Helper(text:String,icon:ImageVector=Icons.Outlined.Info){Row(Modifier.padding(horizontal=4.dp,vertical=14.dp),horizontalArrangement=Arrangement.spacedBy(9.dp)){
-    Icon(icon,null,modifier=Modifier.size(17.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant)
+    LIcon(icon,null,modifier=Modifier.size(17.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant)
     LText(text,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
 }}
 @Composable
 fun EmptyState(title:String,text:String,icon:ImageVector=Icons.Outlined.CloudDone,action:(@Composable ()->Unit)?=null) {
     Column(Modifier.fillMaxWidth().animateContentSize().padding(28.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(15.dp)) {
         Surface(color=MaterialTheme.colorScheme.primaryContainer,shape=RoundedCornerShape(35.dp),modifier=Modifier.size(106.dp)){Box(contentAlignment=Alignment.Center){
-            Crossfade(icon,animationSpec=tween(HarborMotion.MEDIUM),label="status-icon") { current -> Icon(current,null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.size(53.dp)) }
+            Crossfade(icon,animationSpec=tween(HarborMotion.MEDIUM),label="status-icon") { current -> LIcon(current,null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.size(53.dp)) }
         }}
         AnimatedContent(title,label="status-title") { current -> LText(current,style=MaterialTheme.typography.headlineSmall) }
         LText(text,style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
@@ -222,28 +227,28 @@ fun backupHeading(vm:HarborViewModel,data:HarborUiData):Pair<String,String> = wh
 fun PhotosScreen(vm:HarborViewModel,data:HarborUiData,onPermissions:()->Unit,onPickFiles:()->Unit) {
     val locale=androidx.compose.ui.platform.LocalConfiguration.current.locales[0]
     val status=backupHeading(vm,data)
-    val list=remember(data.media,data.backups,data.items,vm.filter,vm.type,vm.fromDate,vm.toDate,vm.libraryAlbum,data.settings.account){data.media.filter { m ->
+    val list=remember(data.media,data.backups,data.items,vm.filter,vm.type,vm.fromDate,vm.toDate,vm.libraryAlbum,data.settings.account){data.logicalMedia.filter { m ->
         val s=data.status(m)
         (vm.filter=="all"||(vm.filter=="uploaded"&&s=="uploaded")||(vm.filter=="pending"&&s in setOf("pending","unknown"))||(vm.filter=="error"&&s=="error")) &&
-            (vm.type=="all"||(vm.type=="video"&&m.video)||(vm.type=="photo"&&!m.video)||(vm.type=="live"&&!m.video&&m.pairingID.isNotEmpty())) && m.captured>=vm.fromDate && m.captured<=vm.toDate && (vm.libraryAlbum.isEmpty()||m.folderKey==vm.libraryAlbum)
+            (vm.type=="all"||(vm.type=="video"&&m.video)||(vm.type=="photo"&&!m.video)||(vm.type=="live"&&!m.video&&m.pairingID.isNotEmpty())) && m.captured>=vm.fromDate && m.captured<=vm.toDate && (vm.libraryAlbum.isEmpty()||vm.libraryAlbum in LivePhotoPairing.folders(m,data.media))
     }}
     val groups=remember(list){list.groupBy{Instant.ofEpochMilli(it.captured).atZone(ZoneId.systemDefault()).toLocalDate()}}
     Box(Modifier.fillMaxSize()) {
         LazyVerticalGrid(columns=GridCells.Adaptive(112.dp),horizontalArrangement=Arrangement.spacedBy(3.dp),verticalArrangement=Arrangement.spacedBy(3.dp),contentPadding=PaddingValues(bottom=if(vm.selectionMode)100.dp else 20.dp)) {
             item(span={GridItemSpan(maxLineSpan)}){PageTitle(if(vm.selectionMode)"已选择 ${vm.selected.size} 项" else "照片",vm,true){
                 if(vm.selectionMode)TextButton(onClick=vm::clearSelection){LText("完成")}
-                else {IconButton(onClick=onPickFiles){Icon(Icons.Outlined.AddPhotoAlternate,"手动选择文件")};Avatar(data.settings.account){vm.sheet="account"}}
+                else {IconButton(onClick=onPickFiles){LIcon(Icons.Outlined.AddPhotoAlternate,"手动选择文件")};Avatar(data.settings.account){vm.sheet="account"}}
             }}
             item(span={GridItemSpan(maxLineSpan)}){Surface(onClick={vm.tab("backup")},color=MaterialTheme.colorScheme.primaryContainer,shape=RoundedCornerShape(25.dp),modifier=Modifier.padding(horizontal=20.dp,vertical=8.dp)) {
                 Row(Modifier.padding(17.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)){
-                    Icon(if(data.pending.isEmpty())Icons.Outlined.CloudDone else Icons.Outlined.CloudUpload,null,tint=MaterialTheme.colorScheme.primary)
+                    LIcon(if(data.pending.isEmpty())Icons.Outlined.CloudDone else Icons.Outlined.CloudUpload,null,tint=MaterialTheme.colorScheme.primary)
                     Column(Modifier.weight(1f)){LText(status.first,style=MaterialTheme.typography.titleSmall);LText(status.second,style=MaterialTheme.typography.bodySmall,maxLines=1,overflow=TextOverflow.Ellipsis)}
-                    Icon(Icons.Outlined.ChevronRight,null)
+                    LIcon(Icons.Outlined.ChevronRight,null)
                 }
             }}
             item(span={GridItemSpan(maxLineSpan)}){Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal=20.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)){
                 listOf("all" to "全部","pending" to "待备份","uploaded" to "已备份","error" to "需要处理").forEach{(key,label)->FilterChip(vm.filter==key,{vm.filter=key;vm.clearSelection()},{LText(label)})}
-                IconButton(onClick={vm.sheet="filter"}){Icon(Icons.Outlined.Tune,"筛选照片")}
+                IconButton(onClick={vm.sheet="filter"}){LIcon(Icons.Outlined.Tune,"筛选照片")}
             }}
             item(span={GridItemSpan(maxLineSpan)}){
                 var albums by remember{mutableStateOf(false)}
@@ -271,13 +276,13 @@ fun PhotosScreen(vm:HarborViewModel,data:HarborUiData,onPermissions:()->Unit,onP
                         AsyncImage(ImageRequest.Builder(LocalContext.current).data(Uri.parse(media.id)).size(360).memoryCacheKey("${media.id}:${media.modified}:${media.size}").build(),media.name,
                             modifier=Modifier.fillMaxSize().padding(inset.coerceIn(0.dp,9.dp)).clip(RoundedCornerShape(corner)),contentScale=ContentScale.Crop)
                         AnimatedVisibility(selected,modifier=Modifier.padding(7.dp).align(Alignment.TopStart),enter=fadeIn()+scaleIn(initialScale=.7f),exit=fadeOut()+scaleOut(targetScale=.7f)) {
-                            Surface(color=MaterialTheme.colorScheme.primary,shape=CircleShape){Icon(Icons.Outlined.Check,"已选择",Modifier.padding(3.dp).size(15.dp))}
+                            Surface(color=MaterialTheme.colorScheme.primary,shape=CircleShape){LIcon(Icons.Outlined.Check,"已选择",Modifier.padding(3.dp).size(15.dp))}
                         }
                         Surface(color=if(phase=="uploaded")Color(0xFFEDF7EB) else MaterialTheme.colorScheme.surface.copy(alpha=.92f),shape=CircleShape,modifier=Modifier.padding(7.dp).align(Alignment.BottomEnd)) {
-                            Icon(when(phase){"uploaded"->Icons.Outlined.CloudDone;"error"->Icons.Outlined.ErrorOutline;"uploading"->Icons.Outlined.Sync;else->Icons.Outlined.CloudUpload},
+                            LIcon(when(phase){"uploaded"->Icons.Outlined.CloudDone;"error"->Icons.Outlined.ErrorOutline;"uploading"->Icons.Outlined.Sync;else->Icons.Outlined.CloudUpload},
                                 when(phase){"uploaded"->"已备份";"error"->"需要处理";"uploading"->"备份中";"pending"->"待备份";else->"待确认"},modifier=Modifier.padding(4.dp).size(15.dp),tint=if(phase=="uploaded")Color(0xFF38664C) else MaterialTheme.colorScheme.primary)
                         }
-                        if(media.video)Icon(Icons.Outlined.PlayArrow,"视频",Modifier.align(Alignment.BottomStart).padding(7.dp).size(20.dp),tint=Color.White)
+                        if(media.video)LIcon(Icons.Outlined.PlayArrow,"视频",Modifier.align(Alignment.BottomStart).padding(7.dp).size(20.dp),tint=Color.White)
                     }
                 }
             }
@@ -286,7 +291,7 @@ fun PhotosScreen(vm:HarborViewModel,data:HarborUiData,onPermissions:()->Unit,onP
             enter=fadeIn()+slideInVertically{it/2},exit=fadeOut()+slideOutVertically{it/2}) {
           Surface(color=MaterialTheme.colorScheme.surfaceContainerHigh,shape=RoundedCornerShape(30.dp),shadowElevation=6.dp){
             Row(Modifier.horizontalScroll(rememberScrollState()).padding(8.dp),horizontalArrangement=Arrangement.spacedBy(6.dp)){
-                Button(onClick={vm.start(vm.selected.toList())},enabled=vm.selected.isNotEmpty()&&!vm.busy){Icon(Icons.Outlined.CloudUpload,null);Spacer(Modifier.width(7.dp));LText("备份所选")}
+                Button(onClick={vm.start(vm.selected.toList())},enabled=vm.selected.isNotEmpty()&&!vm.busy){LIcon(Icons.Outlined.CloudUpload,null);Spacer(Modifier.width(7.dp));LText("备份所选")}
             }
           }
         }
@@ -308,21 +313,23 @@ fun Avatar(account:String,onClick:()->Unit){Surface(onClick=onClick,color=Materi
 fun BackupScreen(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit) {
     val status=backupHeading(vm,data);val job=data.latestJob;val done=data.doneCount
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        PageTitle("备份",vm,true){IconButton(onClick={vm.navigate("preferences")}){Icon(Icons.Outlined.Settings,"备份设置")}}
+        PageTitle("备份",vm,true){IconButton(onClick={vm.navigate("preferences")}){LIcon(Icons.Outlined.Settings,"备份设置")}}
         EmptyState(status.first,status.second,when{data.activeJob.isNotEmpty()->Icons.Outlined.CloudUpload;data.pending.isEmpty()->Icons.Outlined.CloudDone;else->Icons.Outlined.CloudUpload}) {
             when {
                 data.settings.account.isEmpty()||vm.loginRequired||job?.state=="auth_required"->Button(onClick={vm.sheet="account"},enabled=!vm.busy){LText("选择或添加账号")}
-                data.activeJob.isNotEmpty()->FilledTonalButton(onClick=vm::pause,enabled=job?.state!="pausing"&&!vm.busy){Icon(Icons.Outlined.Pause,null);LText("暂停备份")}
-                job?.state=="paused"->Button(onClick={vm.resume(job.id)},enabled=!vm.busy){Icon(Icons.Outlined.PlayArrow,null);LText("继续备份")}
+                data.activeJob.isNotEmpty()->FilledTonalButton(onClick=vm::pause,enabled=job?.state!="pausing"&&!vm.busy){LIcon(Icons.Outlined.Pause,null);LText("暂停备份")}
+                job?.state=="paused"->Button(onClick={vm.resume(job.id)},enabled=!vm.busy){LIcon(Icons.Outlined.PlayArrow,null);LText("继续备份")}
                 job?.state=="needs_attention"->Button(onClick={vm.retry(job.id)},enabled=!vm.busy){LText("重试未完成项目")}
                 !data.settings.allFolders&&data.settings.folders.isEmpty()->Button(onClick={vm.navigate("folders")}){LText("选择备份文件夹")}
-                else->Button(onClick={vm.start()},enabled=!vm.busy&&vm.engineReady){Icon(Icons.Outlined.CloudUpload,null);Spacer(Modifier.width(8.dp));LText(if(data.pending.isEmpty())"检查并备份" else "立即备份")}
+                else->Button(onClick={vm.start()},enabled=!vm.busy&&vm.engineReady){LIcon(Icons.Outlined.CloudUpload,null);Spacer(Modifier.width(8.dp));LText(if(data.pending.isEmpty())"检查并备份" else "立即备份")}
             }
         }
         Column(Modifier.padding(horizontal=20.dp)) {
+            val activity by vm.graph.pipeline.activity.collectAsState()
+            if(activity.values.any{it>0})LText("准备中 ${(activity["preparation"]?:0)+(activity["lookup"]?:0)} · 上传中 ${activity["upload"]?:0} · 确认中 ${(activity["commit"]?:0)+(activity["confirmation"]?:0)}",style=MaterialTheme.typography.bodySmall)
             if(data.activeJob.isNotEmpty()) {
                 key(data.transfer.item) { HarborProgress(if(data.transfer.total>0)data.transfer.bytes.toFloat()/data.transfer.total else 0f,modifier=Modifier.fillMaxWidth().clip(CircleShape)) }
-                LText("${phaseLabel(data.transfer.phase)} · ${formatSize(data.transfer.bytes)} / ${formatSize(data.transfer.total)} · ${formatSize(data.transfer.speed)}/s",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(vertical=10.dp))
+                LText("${localize(phaseLabel(data.transfer.phase))} · ${formatSize(data.transfer.bytes)} / ${formatSize(data.transfer.total)} · ${formatSize(data.transfer.speed)}/s",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(vertical=10.dp))
             }
             val currentStats=data.statisticsMap[job?.id]
             if(currentStats!=null) {
@@ -367,13 +374,13 @@ fun ProfileScreen(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit) {
     val accounts by vm.accounts.collectAsState()
     val profile=accounts.firstOrNull{it.email==data.settings.account}
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        PageTitle("我的",vm,true){IconButton(onClick={vm.sheet="appearance"}){Icon(Icons.Outlined.Palette,"外观")}}
+        PageTitle("我的",vm,true){IconButton(onClick={vm.sheet="appearance"}){LIcon(Icons.Outlined.Palette,"外观")}}
         Column(Modifier.padding(horizontal=20.dp)) {
             Surface(onClick={vm.sheet="account"},shape=RoundedCornerShape(26.dp),color=MaterialTheme.colorScheme.surfaceContainerLow){
                 Row(Modifier.fillMaxWidth().padding(20.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(16.dp)){
                     Avatar(data.settings.account){vm.sheet="account"}
                     Column(Modifier.weight(1f)){LText(profile?.displayName?.takeIf{it.isNotBlank()}?:data.settings.account.substringBefore('@').ifEmpty{"尚未登录"},style=MaterialTheme.typography.titleLarge);LText(data.settings.account.ifEmpty{"登录 Google，开始备份"},style=MaterialTheme.typography.bodySmall)}
-                    Icon(Icons.Outlined.ChevronRight,null)
+                    LIcon(Icons.Outlined.ChevronRight,null)
                 }
             }
             Spacer(Modifier.height(18.dp))
@@ -382,7 +389,7 @@ fun ProfileScreen(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit) {
                     LText("给手机腾点空间",style=MaterialTheme.typography.labelLarge)
                     LText(formatSize(backed.sumOf{it.size}),style=MaterialTheme.typography.displaySmall,modifier=Modifier.padding(vertical=8.dp))
                     LText("${backed.size} 个已备份项目",style=MaterialTheme.typography.bodySmall)
-                    Spacer(Modifier.height(15.dp));Button(onClick={vm.navigate("free-space")}){Icon(Icons.Outlined.AutoAwesome,null);Spacer(Modifier.width(8.dp));LText("在 Google 相册释放空间")}
+                    Spacer(Modifier.height(15.dp));Button(onClick={vm.navigate("free-space")}){LIcon(Icons.Outlined.AutoAwesome,null);Spacer(Modifier.width(8.dp));LText("在 Google 相册释放空间")}
                 }
             }
             SectionLabel("偏好设置")

@@ -4,7 +4,11 @@
   "files": [
     {
       "path": "harbor_android.py",
-      "sha256": "8492b5939f012ba943f5543a9a52192532c7fbd832a554a03b04544d612753a9"
+      "sha256": "79bd7516c9e2f665522f5b55d981f349c5d940b575d67c6462d2cb4280b7b765"
+    },
+    {
+      "path": "harbor_android_deadline.py",
+      "sha256": "a936532fa8f094ae521c75ba4bbb44536c077f609f329b69b863cf4c51572365"
     },
     {
       "path": "harbor_diagnostics.py",

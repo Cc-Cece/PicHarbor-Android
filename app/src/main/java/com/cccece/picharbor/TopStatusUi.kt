@@ -46,14 +46,14 @@ fun HarborTopStatus(vm:HarborViewModel,data:HarborUiData,transfers:Map<String,Tr
     Surface(color=MaterialTheme.colorScheme.surfaceContainerLow,tonalElevation=1.dp) {
         Column(Modifier.fillMaxWidth().statusBarsPadding().clickable {vm.tab("backup")}.padding(horizontal=16.dp,vertical=8.dp)) {
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
-                Icon(Icons.Outlined.CloudUpload,null,Modifier.size(20.dp),tint=MaterialTheme.colorScheme.primary)
+                LIcon(Icons.Outlined.CloudUpload,null,Modifier.size(20.dp),tint=MaterialTheme.colorScheme.primary)
                 Column(Modifier.weight(1f)) {
                     LText(title,style=MaterialTheme.typography.labelLarge)
                     LText(caption,style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1)
                 }
                 LText("${(fraction*100).toInt()}%",style=MaterialTheme.typography.labelLarge)
-                if(job.id==data.activeJob&&job.state=="running")IconButton(onClick=vm::pause,modifier=Modifier.size(36.dp)){Icon(Icons.Outlined.Pause,"暂停备份")}
-                else if(job.state=="paused")IconButton(onClick={vm.resume(job.id)},modifier=Modifier.size(36.dp)){Icon(Icons.Outlined.PlayArrow,"继续备份")}
+                if(job.id==data.activeJob&&job.state=="running")IconButton(onClick=vm::pause,modifier=Modifier.size(36.dp)){LIcon(Icons.Outlined.Pause,"暂停备份")}
+                else if(job.state=="paused")IconButton(onClick={vm.resume(job.id)},modifier=Modifier.size(36.dp)){LIcon(Icons.Outlined.PlayArrow,"继续备份")}
             }
             HarborProgress(fraction,Modifier.fillMaxWidth().padding(top=6.dp).height(4.dp))
         }

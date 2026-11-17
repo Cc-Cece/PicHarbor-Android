@@ -60,7 +60,7 @@ class HarborCore(private val storePath: String = "", private val dao: HarborDao?
         val actions=result.optJSONArray("actions")?:org.json.JSONArray()
         val names=(0 until actions.length()).map{actions.getString(it)}.toSet()
         contractReady=result.optBoolean("ok")&&result.optInt("protocol_version")==2&&
-            setOf("create_task","transition","evaluate_scope","batch_pause","batch_resume","select_proxy","select_versions").all{it in names}
+            setOf("create_task","transition","evaluate_scope","batch_pause","batch_resume","select_proxy","select_versions","resolve_pipeline","resolve_execution").all{it in names}
         return contractReady
     }
     @Volatile private var moduleName: String? = null
@@ -154,6 +154,10 @@ class HarborCore(private val storePath: String = "", private val dao: HarborDao?
     suspend fun createTask(taskId: String, asset: JSONObject, idempotencyKey: String): JSONObject {
         dao?.coreTask(taskId)?.let { saved ->
             val task = JSONObject(saved.payload)
+            val previous=task.optJSONObject("asset")
+            if(previous!=null&&(previous.optString("sha256")!=asset.optString("sha256")||
+                previous.optJSONArray("resources")?.toString()!=asset.optJSONArray("resources")?.toString()))
+                return JSONObject().put("ok",false).put("error","SOURCE_CHANGED")
             if (task.optString("state") in setOf("interrupted", "failed", "waiting_network"))
                 return transition(task, "queued")
             return JSONObject().put("ok", true).put("task", task)
@@ -260,6 +264,10 @@ class HarborCore(private val storePath: String = "", private val dao: HarborDao?
     }
 
     suspend fun capabilities(): JSONObject = dispatch("capabilities")
+    suspend fun task(taskId:String):JSONObject? {
+        if(dao!=null)return dao.coreTask(taskId)?.let{JSONObject(it.payload)}
+        return storeLock.withLock{tasks.optJSONObject(taskId)?.let{JSONObject(it.toString())}}
+    }
 
     /** True when the core answered that it does not know this action yet. */
     fun isUnknownOperation(result: JSONObject): Boolean =

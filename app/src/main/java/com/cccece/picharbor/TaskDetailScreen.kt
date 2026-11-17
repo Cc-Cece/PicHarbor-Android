@@ -18,7 +18,7 @@ fun TaskDetailScreen(vm:HarborViewModel,data:HarborUiData) {
         if(item!=null)Column(Modifier.padding(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
             val media=data.media.firstOrNull{it.id==item.mediaId}
             var fullName by remember{mutableStateOf(false)}
-            TextButton(onClick={fullName=!fullName}){LText(item.name,maxLines=if(fullName)Int.MAX_VALUE else 2,overflow=TextOverflow.Ellipsis)}
+            TextButton(onClick={fullName=!fullName}){LText(item.name,localize=false,maxLines=if(fullName)Int.MAX_VALUE else 2,overflow=TextOverflow.Ellipsis)}
             val clipboard=androidx.compose.ui.platform.LocalClipboardManager.current
             TextButton(onClick={clipboard.setText(androidx.compose.ui.text.AnnotatedString(item.name))}){LText("复制文件名")}
             LText(when(item.state){"done","exists"->"已备份";"paused"->"已暂停";"failed"->"可重试";"waiting_confirmation"->"等待云端确认";else->phaseLabel(item.state)})

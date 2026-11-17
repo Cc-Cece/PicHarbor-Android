@@ -29,9 +29,8 @@ fun PicHarborTheme(settings:HarborSettings,content:@Composable ()->Unit) {
         else lightColorScheme(primary=colors[0],onPrimary=Color.White,primaryContainer=colors[1],onPrimaryContainer=colors[2],
             background=Color(0xFFFDF8FF),surface=Color(0xFFFDF8FF),surfaceContainer=Color(0xFFF1EAF5),surfaceContainerLow=Color(0xFFF7F1FA),surfaceContainerHigh=Color(0xFFEEE7F2))
     }
-    val context=LocalContext.current
-    val activity=findActivity(context)
     val view=LocalView.current
+    val activity=findActivity(view.context)
     SideEffect {
         activity?.window?.let { window ->
             window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(scheme.background.toArgb()))

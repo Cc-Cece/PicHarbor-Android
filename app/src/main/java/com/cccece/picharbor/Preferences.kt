@@ -26,7 +26,9 @@ data class HarborSettings(
      * for that account. */
     val livePhotoPairing:String="original",
     val editPolicy:String="both", val strictConfirmation:Boolean=false,
+    val pipelineMode:String="automatic",val pipelineLimits:String="",val executionPolicy:String="",
     val archiveEnabled:Boolean=true, val archiveDays:Int=14, val language:String="system",
+    val activitySource:String="all",val activityStatus:String="all",val activityGrouping:String="batch",val archiveSource:String="all",
     /** Explicit proxy, off by default and device-level (not per account, so
      * it is deliberately NOT part of the per-account profile maps below).
      * The password is NOT stored here; see CredentialStore proxy methods. */
@@ -55,9 +57,14 @@ class Preferences(private val context: Context) {
         livePhotoPairing=p[stringPreferencesKey("livePhotoPairing")]?:"original",
         editPolicy=p[stringPreferencesKey("editPolicy")]?:"both",
         strictConfirmation=p[booleanPreferencesKey("strictConfirmation")]?:false,
+        pipelineMode=p[stringPreferencesKey("pipelineMode")]?:"automatic",
+        pipelineLimits=p[stringPreferencesKey("pipelineLimits")]?:"",
+        executionPolicy=p[stringPreferencesKey("executionPolicy")]?:"",
         archiveEnabled=p[booleanPreferencesKey("archiveEnabled")]?:true,
         archiveDays=(p[intPreferencesKey("archiveDays")]?:14).coerceIn(1,90),
         language=p[stringPreferencesKey("language")]?:"system",
+        activitySource=p[stringPreferencesKey("activitySource")]?:"all",activityStatus=p[stringPreferencesKey("activityStatus")]?:"all",
+        activityGrouping=p[stringPreferencesKey("activityGrouping")]?:"batch",archiveSource=p[stringPreferencesKey("archiveSource")]?:"all",
         proxyEnabled=p[booleanPreferencesKey("proxyEnabled")]?:false,
         proxyScheme=p[stringPreferencesKey("proxyScheme")]?:"http",
         proxyHost=p[stringPreferencesKey("proxyHost")]?:"",
@@ -75,7 +82,7 @@ class Preferences(private val context: Context) {
     suspend fun activateAccount(account:String) {
         context.harborPreferences.edit { p ->
             val booleans=mapOf("onboarded" to false,"auto" to false,"wifi" to true,"charging" to false,"videos" to true,"scheduled" to false,"restart" to true,"sameName" to false,"allFolders" to true,"strictConfirmation" to false)
-            val strings=mapOf("time" to "02:00","quality" to "original","albumMode" to "none","albumValue" to "","mobile" to "none","livePhotoPairing" to "original","editPolicy" to "both")
+            val strings=mapOf("time" to "02:00","quality" to "original","albumMode" to "none","albumValue" to "","mobile" to "none","livePhotoPairing" to "original","editPolicy" to "both","pipelineMode" to "automatic","pipelineLimits" to "","executionPolicy" to "")
             val integers=mapOf("concurrency" to 2,"timeout" to 60,"retries" to 3)
             val old=p[stringPreferencesKey("account")].orEmpty()
             if(old==account)return@edit
@@ -103,6 +110,9 @@ class Preferences(private val context: Context) {
             p[stringPreferencesKey("quality")]="original"
             p[stringPreferencesKey("livePhotoPairing")]="original"
             p[stringPreferencesKey("editPolicy")]="both"
+            p[stringPreferencesKey("pipelineMode")]="automatic"
+            p[stringPreferencesKey("pipelineLimits")]=""
+            p[stringPreferencesKey("executionPolicy")]=""
             p[stringPreferencesKey("albumMode")]="none"
             p[stringPreferencesKey("albumValue")]=""
             p[stringPreferencesKey("mobile")]="none"

@@ -39,8 +39,7 @@ class BackupRepository(private val graph:AppGraph) {
         if(item.account!=graph.preferences.get().account)return
         val job=graph.dao.job(item.jobId)?:return
         if(item.state in setOf("done","exists","cancelled"))return
-        val tasks=graph.harborCore.storeLoad().optJSONObject("tasks")
-        val task=tasks?.optJSONObject(id)
+        val task=graph.harborCore.task(id)
         when(action) {
             "pause"->{suspendedItems.add(id);task?.let{graph.harborCore.transition(it,"paused")};graph.dao.putItem(item.copy(state="paused"))}
             "resume"->{
@@ -60,11 +59,15 @@ class BackupRepository(private val graph:AppGraph) {
     private val identityCache=java.util.concurrent.ConcurrentHashMap<String,String>()
     private val keyframeHints=java.util.concurrent.ConcurrentHashMap<String,Boolean>()
     private val identityMutex=Mutex()
+    private var identityRevision=-1L
+    private var identitySnapshot:List<MediaEntry>?=null
     suspend fun identifiedMedia():List<MediaEntry> = identityMutex.withLock {
+        val revision=graph.media.revision.get()
+        identitySnapshot?.takeIf{identityRevision==revision}?.let{return@withLock it}
         val all=graph.dao.media()
         val currentKeys=all.map{"${it.id}:${it.modified}:${it.size}"}.toSet()
         identityCache.keys.retainAll(currentKeys);keyframeHints.keys.retainAll(currentKeys)
-        all.map { media ->
+        val identified=all.map { media ->
             val supported=media.mime in setOf("image/jpeg","image/heic","image/heif","video/quicktime","video/mp4") ||
                 media.name.substringAfterLast('.').lowercase() in setOf("jpg","jpeg","heic","heif","mov","mp4")
             if(!supported)media else {
@@ -79,14 +82,20 @@ class BackupRepository(private val graph:AppGraph) {
                     keyframeHints[key]=response.optBoolean("still_image_time")
                     identityCache[key]=found;found
                 }
-                if(media.pairingID!=identifier)graph.dao.updatePairingID(media.id,media.modified,media.size,identifier)
                 media.copy(pairingID=identifier)
             }
         }
+        val previous=all.associateBy{it.id}
+        graph.database.withTransaction {
+            identified.filter{it.pairingID!=previous[it.id]?.pairingID}.forEach{graph.dao.updatePairingID(it.id,it.modified,it.size,it.pairingID)}
+        }
+        if(graph.media.revision.get()==revision){identityRevision=revision;identitySnapshot=identified}
+        identified
     }
     private val lock=Mutex()
     private val enqueueLock=Mutex()
     private val stopping=AtomicBoolean(false)
+    val shouldStop get()=stopping.get()
     /** Live-photo pair claims: pairKey (photo media id) -> claiming item id. */
     /** Items that must be processed as single resources (live-photo stepwise fallback). */
     /** Latest per-item cleanup evidence, populated by [reconcile]; empty means "no evidence". */
@@ -178,9 +187,10 @@ class BackupRepository(private val graph:AppGraph) {
                 continue
             }
             if(automatic && graph.dao.suppressed(settings.account,media.id,media.modified)>0)continue
-            if(BackupPolicy.matches(media,known[media.id]))continue
-            if(!settings.includes(media))continue
-            when(val decision=ScopePolicy.evaluate(graph.harborCore,settings,media)) {
+            val partner=if(!media.video)LivePhotoPairing.findPair(media,allMedia) else null
+            if(LivePhotoPairing.backed(media,allMedia,known))continue
+            if(!settings.includes(media)&&!(partner!=null&&!media.video&&settings.includesFolder(partner)))continue
+            when(val decision=ScopePolicy.evaluate(graph.harborCore,settings,media,partner)) {
                 ScopePolicy.ScopeDecision.Included, is ScopePolicy.ScopeDecision.LocalFallback -> {
                     if(decision is ScopePolicy.ScopeDecision.LocalFallback && !decision.included)continue
                     candidates+=media
@@ -194,7 +204,7 @@ class BackupRepository(private val graph:AppGraph) {
             }
         }
         val job=BackupJob(UUID.randomUUID().toString(),settings.account,System.currentTimeMillis(),automatic,allowMobile=allowMobile,
-            albumMode=settings.albumMode,albumValue=settings.albumValue,quality=settings.quality,liveStrategy=settings.livePhotoPairing,editPolicy=settings.editPolicy)
+            albumMode=settings.albumMode,albumValue=settings.albumValue,quality=settings.quality,liveStrategy=settings.livePhotoPairing,editPolicy=settings.editPolicy,strictConfirmation=settings.strictConfirmation)
         val selected=ArrayList<String>();var created=0;var reused=0
         graph.database.withTransaction {
             for(media in candidates) {
@@ -339,9 +349,9 @@ class BackupRepository(private val graph:AppGraph) {
     suspend fun retry(jobId:String) {
         val job=graph.dao.job(jobId)?:return
         if(job.account!=graph.preferences.get().account)return
-        val requeued=graph.dao.items(jobId).filter{it.state in setOf("failed","album_pending","cancelled")}
+        val requeued=graph.dao.items(jobId).filter{it.state in setOf("failed","album_pending")}
         requeued.forEach {
-            graph.dao.putItem(it.copy(state=if(it.remoteKey.isEmpty())"queued" else "album_pending",error=""))
+            graph.dao.putItem(it.copy(state=if(it.remoteKey.isEmpty())"queued" else "album_pending",error="",attempt=0,confirmationElapsedMs=0))
         }
         // Retried items go back through the core state machine as well.
         // batch_resume only accepts paused / interrupted tasks, so failed
@@ -374,6 +384,7 @@ class BackupRepository(private val graph:AppGraph) {
         while(keys.hasNext()) {
             val task=tasks.optJSONObject(keys.next())?:continue
             val state=task.optString("state")
+            if(state in setOf("done","cancelled"))clearTaskArtifacts(task.optString("task_id"))
             val item=graph.dao.item(task.optString("task_id"))
             if(item!=null && graph.dao.job(item.jobId)?.state!="ended") {
                 if(state=="cancelled")graph.dao.putItem(item.copy(state="cancelled"))
@@ -388,10 +399,21 @@ class BackupRepository(private val graph:AppGraph) {
                     }
                 }
             }
-            if(state in setOf(HarborCoreState.UPLOADING,HarborCoreState.SUBMITTING,HarborCoreState.CONFIRMING)) {
+            if(state==HarborCoreState.CONFIRMING&&task.optBoolean("cloud_confirmed")) {
+                graph.harborCore.transition(task,"waiting_confirmation")
+                if(item!=null)graph.dao.putItem(item.copy(state="waiting_confirmation"))
+            } else if(state in setOf(HarborCoreState.UPLOADING,HarborCoreState.SUBMITTING,HarborCoreState.CONFIRMING)) {
                 runCatching{graph.harborCore.transition(task,HarborCoreState.INTERRUPTED)}
             }
         }
+    }
+    private fun clearTaskArtifacts(id:String) {
+        if(!id.matches(Regex("[a-zA-Z0-9-]{1,100}")))return
+        val runtime=java.io.File(graph.app.filesDir,"runtime")
+        for(task in listOf(id,"$id-motion"))for(suffix in listOf(".receipt",".submitted",".digest.json",".part"))
+            java.io.File(runtime,"ordinary-staging/$task$suffix").delete()
+        for(suffix in listOf(".photo.receipt",".video.receipt",".submitted",".photo-submitted",".motion.jpg",".motion.heic",".motion.part",".motion.sources.json"))
+            java.io.File(runtime,"pair-staging/$id$suffix").delete()
     }
     suspend fun end(jobId:String) {
         if(activeJob.value==jobId)stopAndWait()
@@ -422,7 +444,11 @@ class BackupRepository(private val graph:AppGraph) {
         try {
             val account=graph.ensureAccount()
             while(!externalCancelled()&&!stopping.get()) {
-                val settings=graph.preferences.get()
+                val storedSettings=graph.preferences.get()
+                val protection=graph.harborCore.dispatch("resolve_execution",JSONObject().put("overrides",storedSettings.executionPolicy.takeIf{it.isNotBlank()}?.let{JSONObject(it)}?:JSONObject.NULL))
+                if(!protection.optBoolean("ok"))throw EngineFailure("INVALID_EXECUTION_POLICY")
+                val settings=storedSettings.copy(retries=protection.getJSONObject("policy").getInt("retries"))
+                graph.pipeline.configure(settings)
                 val charging=graph.app.getSystemService(android.os.BatteryManager::class.java).isCharging
                 val job=graph.dao.nextJob(account,settings.auto&&(!settings.charging||charging))?:break
                 graph.ensureAccount(job.proxyPolicy)
@@ -434,7 +460,8 @@ class BackupRepository(private val graph:AppGraph) {
                 val jobDiagnostic=DiagnosticContext(job=job.id)
                 Diagnostics.event("job.state_changed",jobDiagnostic,JSONObject().put("state","running").put("concurrency",settings.concurrency).put("setting_timeout_ms",settings.timeout*1000).put("retry_limit",settings.retries))
                 val items=graph.dao.items(job.id).filter{it.state in setOf("queued","album_pending","waiting_confirmation","hashing","checking","uploading","finalizing","finalizing_album")}
-                val semaphore=Semaphore(settings.concurrency)
+                val limits=graph.pipeline.effective.value
+                val semaphore=Semaphore(listOf("preparation","lookup","upload","commit","confirmation").sumOf{limits.optInt(it)}.coerceAtLeast(1))
                 val authenticationFailure=AtomicBoolean(false)
                 val preempted=AtomicBoolean(false)
                 val completed=java.util.concurrent.atomic.AtomicInteger(graph.dao.items(job.id).count{it.state in setOf("done","exists")})
@@ -533,11 +560,18 @@ class BackupRepository(private val graph:AppGraph) {
             graph.dao.putItem(item.copy(state="failed",error="FILE_ACCESS",attempt=item.attempt+1))
             return
         }
+        if(media.modified!=item.modified||media.size!=item.bytes) {
+            graph.dao.putItem(item.copy(state="failed",error="SOURCE_CHANGED",attempt=item.attempt+1));return
+        }
         // The run loop snapshots items up front; a Live Photo partner may
         // already have been finished by its pair's joint task. Re-read.
         if(graph.dao.item(item.id)?.state !in setOf("queued","album_pending","waiting_confirmation","hashing","checking","uploading","finalizing","finalizing_album"))return
         val all=identifiedMedia()
         val identified=all.firstOrNull{it.id==media.id}?:media
+        val savedTask=graph.harborCore.task(item.id)
+        if(item.remoteKey.isNotBlank()&&(item.state=="waiting_confirmation"||savedTask?.optBoolean("cloud_confirmed")==true&&savedTask.optString("state")!="done")) {
+            finishStrictConfirmation(job,item,cancelled);return
+        }
         try {requireAvailableVersions(job.editPolicy)} catch(error:EngineFailure) {
             graph.dao.putItem(item.copy(state="failed",error=error.code,attempt=item.attempt+1));return
         }
@@ -595,7 +629,7 @@ class BackupRepository(private val graph:AppGraph) {
     private suspend fun prepareResource(job:BackupJob,media:MediaEntry,diagnostic:DiagnosticContext):ResourceReady {
         val before=graph.media.current(media)?:throw EngineFailure("FILE_ACCESS")
         if(before.first!=media.size||before.second!=media.modified)throw EngineFailure("SOURCE_CHANGED")
-        val print=graph.engine.call("fingerprint",JSONObject().put("_diagnostics",diagnostic.json()).put("_account",job.account).put("uri",media.id).put("name",media.name))
+        val print=graph.engine.call("fingerprint",JSONObject().put("size",media.size).put("_diagnostics",diagnostic.json()).put("_account",job.account).put("uri",media.id).put("name",media.name))
         val sha1=print.optString("sha1");val sha256=print.optString("sha256");val size=print.optLong("size",media.size)
         if(sha1.isEmpty()||sha256.isEmpty()||size!=media.size)throw EngineFailure("SOURCE_CHANGED")
         val lookup=graph.engine.call("lookup",JSONObject().put("_diagnostics",diagnostic.json()).put("_account",job.account).put("uri",media.id).put("name",media.name))
@@ -636,7 +670,7 @@ class BackupRepository(private val graph:AppGraph) {
             else if(task!!.optString("state")=="confirming") { /* Retry album sync after confirmed pair. */ }
             else {move("preparing");move("uploading");move("submitting");move("confirming")}
             fun resource(value:MediaEntry)=JSONObject().put("uri",value.id).put("name",value.name)
-            val request=JSONObject().put("_account",job.account).put("task_id",item.id).put("photo",resource(group.photo)).put("video",resource(video))
+            val request=JSONObject().put("size",group.photo.size+video.size).put("_diagnostics",DiagnosticContext(job=job.id,item=item.id).json()).put("_account",job.account).put("task_id",item.id).put("photo",resource(group.photo)).put("video",resource(video))
                 .put("quality",job.quality).put("strategy",job.liveStrategy).put("created",group.photo.captured).put("modified",group.photo.modified)
                 .put("album_mode",job.albumMode).put("album_value",job.albumValue).put("folder",group.photo.albumFolder)
             if(job.liveStrategy=="motion")keyframeUs(video)?.let{request.put("keyframe_us",it)}
@@ -653,13 +687,14 @@ class BackupRepository(private val graph:AppGraph) {
             val albumPending=result.optString("state")=="album_pending"
             if(result.optString("state")!="done"&&!albumPending)throw EngineFailure(result.optString("error","PAIR_CONFIRMATION_PENDING"))
             val key=result.getString("remote_key")
-            if(!albumPending)move("done",true,key)
+            val dynamicPending=!albumPending&&job.strictConfirmation&&!dynamicConfirmed(job,key,cancelled)
+            if(dynamicPending)move("waiting_confirmation",true,key) else if(!albumPending)move("done",true,key)
             graph.database.withTransaction {
                 for((entry,role) in listOf(group.photo to "photo",video to "video")) {
                     val value=result.getJSONObject(role)
                     graph.dao.putBackup(BackupRecord(job.account,entry.id,value.getString("sha1"),value.getString("sha256"),key,value.getLong("size"),entry.modified,job.quality,"paired",System.currentTimeMillis()))
                 }
-                graph.dao.putItem(item.copy(state=if(albumPending)"album_pending" else "done",error=result.optString("error"),remoteKey=key,sha1=photo.sha1,sha256=photo.sha256,origin="paired",attempt=item.attempt+1))
+                graph.dao.putItem(item.copy(state=if(dynamicPending)"waiting_confirmation" else if(albumPending)"album_pending" else "done",error=if(dynamicPending)"REMOTE_MOTION_PENDING" else result.optString("error"),remoteKey=key,sha1=photo.sha1,sha256=photo.sha256,origin="paired",attempt=item.attempt+1))
             }
             return true
         } catch(error:Exception) {
@@ -711,6 +746,23 @@ class BackupRepository(private val graph:AppGraph) {
                 return false
             }
             runCatching{graph.harborCore.logEvent("item.state_changed",item.id,JSONObject().put("state","created").put("filename",media.name))}
+            if(coreTask!!.optString("state") in setOf("waiting_confirmation","confirming")&&item.remoteKey.isBlank()) {
+                if(ready.remoteKey.isBlank()) {
+                    graph.dao.putItem(latest.copy(state="waiting_confirmation",error="REMOTE_NOT_VISIBLE"));return true
+                }
+                advance(graph.harborCore.transition(coreTask!!,"confirming",remoteKey=ready.remoteKey,cloudConfirmed=true))
+                latest=latest.copy(remoteKey=ready.remoteKey,origin="content_exists")
+                graph.dao.putBackup(BackupRecord(job.account,media.id,ready.sha1,ready.sha256,ready.remoteKey,ready.size,media.modified,"unknown","content_exists",System.currentTimeMillis()))
+                if(!syncConfirmedAlbum(job,latest,media,ready.remoteKey,cancelled))return true
+                if(mediaKind=="motion_photo"&&job.strictConfirmation) {
+                    graph.dao.putItem(latest.copy(state="waiting_confirmation",error="REMOTE_MOTION_PENDING"))
+                    if(!dynamicConfirmed(job,ready.remoteKey,cancelled)) {
+                        advance(graph.harborCore.transition(coreTask!!,"waiting_confirmation",remoteKey=ready.remoteKey,cloudConfirmed=true));return true
+                    }
+                }
+                advance(graph.harborCore.transition(coreTask!!,"done",remoteKey=ready.remoteKey,cloudConfirmed=true))
+                graph.dao.putItem(latest.copy(state="exists",error=""));return true
+            }
             if(coreTask!!.optString("state") in setOf("confirming","dedup_hit")&&item.remoteKey.isNotBlank()) {
                 if(ready.remoteKey!=item.remoteKey)throw EngineFailure("REMOTE_MISSING")
                 if(!syncConfirmedAlbum(job,latest,media,item.remoteKey,cancelled))return true
@@ -739,6 +791,13 @@ class BackupRepository(private val graph:AppGraph) {
                     graph.dao.putBackup(record)
                     latest=latest.copy(remoteKey=hitKey,origin="content_exists")
                     if(!syncConfirmedAlbum(job,latest,media,hitKey,cancelled))return true
+                    if(mediaKind=="motion_photo"&&job.strictConfirmation) {
+                        advance(graph.harborCore.transition(coreTask!!,HarborCoreState.CONFIRMING,remoteKey=hitKey,cloudConfirmed=true))
+                        graph.dao.putItem(latest.copy(state="waiting_confirmation",error="REMOTE_MOTION_PENDING",attempt=item.attempt+1))
+                        if(!dynamicConfirmed(job,hitKey,cancelled)) {
+                            advance(graph.harborCore.transition(coreTask!!,"waiting_confirmation",remoteKey=hitKey,cloudConfirmed=true));return true
+                        }
+                    }
                     advance(graph.harborCore.transition(coreTask!!,HarborCoreState.DONE,remoteKey=hitKey,cloudConfirmed=true))
                     graph.dao.putItem(latest.copy(state="exists",remoteKey=hitKey,sha1=ready.sha1,sha256=ready.sha256,origin="content_exists",attempt=item.attempt+1))
                     Diagnostics.event("item.state_changed",diagnostic,JSONObject().put("state","exists").put("code",""))
@@ -760,14 +819,26 @@ class BackupRepository(private val graph:AppGraph) {
                     // carrying a remote key; the periodic reconcile() remains
                     // the independent check against the cloud library.
                     advance(graph.harborCore.transition(coreTask!!,HarborCoreState.SUBMITTING))
-                    advance(graph.harborCore.transition(coreTask!!,HarborCoreState.CONFIRMING))
+                    advance(graph.harborCore.transition(coreTask!!,HarborCoreState.CONFIRMING,remoteKey=final.remoteKey,cloudConfirmed=true))
+                    if(mediaKind=="motion_photo"&&job.strictConfirmation) {
+                        graph.dao.putItem(final.copy(state="waiting_confirmation",error="REMOTE_MOTION_PENDING"))
+                        if(!dynamicConfirmed(job,final.remoteKey,cancelled)) {
+                            advance(graph.harborCore.transition(coreTask!!,"waiting_confirmation",remoteKey=final.remoteKey,cloudConfirmed=true));return true
+                        }
+                    }
                     advance(graph.harborCore.transition(coreTask!!,HarborCoreState.DONE,remoteKey=final.remoteKey,cloudConfirmed=true))
+                    graph.dao.putItem(final.copy(error=""))
                     runCatching{graph.harborCore.logEvent("item.state_changed",item.id,JSONObject().put("state","done").put("filename",media.name))}
                 }
                 "album_pending"->{
                     // Content is committed; only the album step is pending.
                     advance(graph.harborCore.transition(coreTask!!,HarborCoreState.SUBMITTING))
                     advance(graph.harborCore.transition(coreTask!!,HarborCoreState.CONFIRMING))
+                }
+                "waiting_confirmation"->{
+                    advance(graph.harborCore.transition(coreTask!!,HarborCoreState.SUBMITTING))
+                    advance(graph.harborCore.transition(coreTask!!,HarborCoreState.CONFIRMING))
+                    advance(graph.harborCore.transition(coreTask!!,"waiting_confirmation"))
                 }
                 "failed"->{
                     advance(graph.harborCore.transition(coreTask!!,HarborCoreState.FAILED,errorCode=final.error.ifBlank{null}))
@@ -782,7 +853,8 @@ class BackupRepository(private val graph:AppGraph) {
             return true
         } catch(error:Exception) {
             coreTask?.let{task->runCatching{graph.harborCore.transition(task,HarborCoreState.INTERRUPTED)}}
-            if(error is EngineFailure&&error.code in setOf("FILE_ACCESS","SOURCE_CHANGED")) {
+            if(error is EngineFailure&&error.code in setOf("FILE_ACCESS","SOURCE_CHANGED","NETWORK_ERROR","RATE_LIMITED","STAGE_TIMEOUT","NO_PROGRESS_TIMEOUT")) {
+                coreTask?.let{task->runCatching{graph.harborCore.transition(task,"failed",errorCode=error.code)}}
                 graph.dao.putItem(latest.copy(state="failed",error=error.code,attempt=item.attempt+1))
                 return true
             }
@@ -804,10 +876,40 @@ class BackupRepository(private val graph:AppGraph) {
      * find_remote_media_by_hash call. Without those flags the engine keeps
      * its old behaviour (direct engine callers outside the core flow).
      */
+    private suspend fun dynamicConfirmed(job:BackupJob,key:String,cancelled:()->Boolean):Boolean {
+        return graph.engine.call("motion_status",JSONObject().put("_diagnostics",DiagnosticContext(job=job.id,item="confirmation").json()).put("_account",job.account).put("keys",org.json.JSONArray().put(key)),EngineCallback(cancelled)).optBoolean("recognized")
+    }
+    private suspend fun finishStrictConfirmation(job:BackupJob,item:BackupItem,cancelled:()->Boolean) {
+        val saved=graph.harborCore.task(item.id)?:throw EngineFailure("ENGINE_ERROR")
+        val start=if(saved.optString("state") in setOf("interrupted","failed"))graph.harborCore.updatedTask(graph.harborCore.transition(saved,"queued"))?:throw EngineFailure("ENGINE_ERROR") else saved
+        val task=graph.harborCore.updatedTask(graph.harborCore.transition(start,"confirming",remoteKey=item.remoteKey,cloudConfirmed=true))?:throw EngineFailure("ENGINE_ERROR")
+        val policy=graph.harborCore.dispatch("resolve_execution",JSONObject().put("overrides",graph.preferences.get().executionPolicy.takeIf{it.isNotBlank()}?.let{JSONObject(it)}?:JSONObject.NULL))
+        if(!policy.optBoolean("ok"))throw EngineFailure("INVALID_EXECUTION_POLICY")
+        if(job.strictConfirmation&&item.confirmationElapsedMs>=policy.getJSONObject("policy").getLong("cloud_minutes")*60000) {
+            graph.harborCore.transition(task,"failed",errorCode="CLOUD_CONFIRMATION_TIMEOUT")
+            graph.dao.putItem(item.copy(state="failed",error="CLOUD_CONFIRMATION_TIMEOUT"));return
+        }
+        val began=android.os.SystemClock.elapsedRealtime()
+        try {
+            if(job.strictConfirmation&&!dynamicConfirmed(job,item.remoteKey,cancelled)) {
+                graph.harborCore.transition(task,"waiting_confirmation",remoteKey=item.remoteKey,cloudConfirmed=true)
+                return
+            }
+        } catch(error:Exception) {
+            graph.harborCore.transition(task,"waiting_confirmation",remoteKey=item.remoteKey,cloudConfirmed=true)
+            throw error
+        } finally {
+            graph.dao.item(item.id)?.let{current->graph.dao.putItem(current.copy(confirmationElapsedMs=current.confirmationElapsedMs+android.os.SystemClock.elapsedRealtime()-began))}
+        }
+        if(cancelled())return
+        val result=graph.harborCore.transition(task,"done",remoteKey=item.remoteKey,cloudConfirmed=true)
+        if(!result.optBoolean("ok"))throw EngineFailure(result.optString("error","ENGINE_ERROR"))
+        graph.dao.putItem(item.copy(state="done",error=""))
+    }
     private suspend fun syncConfirmedAlbum(job:BackupJob,item:BackupItem,media:MediaEntry,key:String,cancelled:()->Boolean):Boolean {
         try {
             if(cancelled())throw EngineFailure("CANCELLED")
-            graph.engine.call("sync_album",JSONObject().put("_account",job.account).put("remote_key",key)
+            graph.engine.call("sync_album",JSONObject().put("_diagnostics",DiagnosticContext(job=job.id,item=item.id).json()).put("_account",job.account).put("remote_key",key)
                 .put("album_mode",job.albumMode).put("album_value",job.albumValue).put("folder",media.albumFolder),EngineCallback(cancelled))
             return true
         } catch(error:Exception) {
@@ -824,7 +926,7 @@ class BackupRepository(private val graph:AppGraph) {
             val before=graph.media.current(media)?:throw EngineFailure("FILE_ACCESS")
             if(before.first!=media.size||before.second!=media.modified)throw EngineFailure("SOURCE_CHANGED")
             graph.dao.putItem(item.copy(state="hashing"))
-            val request=JSONObject().put("_diagnostics",diagnostic.json()).put("_account",job.account).put("uri",media.id).put("name",media.name).put("modified",media.modified)
+            val request=JSONObject().put("task_id",item.id).put("size",media.size).put("_diagnostics",diagnostic.json()).put("_account",job.account).put("uri",media.id).put("name",media.name).put("modified",media.modified)
                 .put("folder",media.albumFolder).put("quality",job.quality).put("album_mode",job.albumMode).put("album_value",job.albumValue)
                 .put("retries",settings.retries).put("same_name",job.automatic&&settings.sameName)
                 .put("remote_key",item.remoteKey).put("origin",item.origin)

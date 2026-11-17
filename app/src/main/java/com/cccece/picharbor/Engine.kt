@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicLong
 class EngineFailure(val code:String,val metrics:JSONObject?=null):Exception(code)
 @Keep
 class EngineCallback(private val cancelled:()->Boolean={false},private val readGate:java.util.concurrent.Semaphore?=null,private val event:(JSONObject)->Unit={}) {
+    private var pipeline:BackupPipeline.Lease?=null
+    fun attachPipeline(value:BackupPipeline.Lease?){pipeline=value}
     private var diagnostic:DiagnosticContext?=null
     private var lastPhase=""
     private val cancellationSeen=java.util.concurrent.atomic.AtomicBoolean(false)
@@ -24,6 +26,14 @@ class EngineCallback(private val cancelled:()->Boolean={false},private val readG
         val parsed=JSONObject(value)
         val context=diagnostic
         val phase=parsed.optString("phase")
+        when(phase) {
+            "hashing"->pipeline?.enter("preparation")
+            "checking","cloud_check"->pipeline?.enter("lookup")
+            "uploading"->pipeline?.enter("upload")
+            "finalizing","finalizing_album","uploaded"->pipeline?.enter("commit")
+            "confirming"->pipeline?.enter("confirmation")
+            "retrying","waiting_content"->pipeline?.close()
+        }
         if(context!=null&&phase!=lastPhase){lastPhase=phase;Diagnostics.event("item.phase_changed",context,JSONObject().put("phase",phase))}
         val span=if(phase=="uploaded")context?.child() else null
         if(span!=null)Diagnostics.event("operation.started",span,JSONObject().put("operation","persist_uploaded_callback"))
@@ -44,16 +54,30 @@ class Engine(private val context:Context) {
         if(action !in setOf("connect","logout")&&!value.has("_account"))value.put("_account",Preferences(context).get().account)
         val diagnostic=value.optJSONObject("_diagnostics")?.let{DiagnosticContext.parse(it)}?:DiagnosticContext()
         value.put("_diagnostics",diagnostic.json())
-        callback?.attach(diagnostic)
+        val managed=diagnostic.item.isNotBlank()&&action in setOf("fingerprint","lookup","process","process_pair","sync_album","motion_status")
+        val graph=(context.applicationContext as PicHarborApp).graph
+        if(action !in setOf("logout","media_identity")) {
+            val settings=graph.preferences.get()
+            val overrides=runCatching{JSONObject(settings.executionPolicy)}.getOrDefault(JSONObject())
+            val policy=graph.harborCore.dispatch("resolve_execution",JSONObject().put("overrides",if(overrides.length()==0)JSONObject.NULL else overrides).put("size",value.optLong("size",0)))
+            if(!policy.optBoolean("ok"))throw EngineFailure(policy.optString("error","ENGINE_ERROR"))
+            value.put("_execution",policy.getJSONObject("policy")).put("_file_seconds",policy.getDouble("file_seconds"))
+            if(action in setOf("process","process_pair"))value.put("retries",0) // The native wave owns the single retry allowance.
+        }
+        val activeCallback=callback?:EngineCallback({managed&&(graph.switching.value||graph.backup.shouldStop)})
+        activeCallback.attach(diagnostic)
+        val lease=if(managed)graph.pipeline.lease{activeCallback.isCancelled()} else null
+        activeCallback.attachPipeline(lease)
         val started=android.os.SystemClock.elapsedRealtime()
         Diagnostics.event("engine.call_started",diagnostic,JSONObject().put("action",action))
         var outcome="error"
         try {
+            lease?.enter(when(action){"fingerprint"->"preparation";"lookup","process_pair"->"lookup";"sync_album"->"commit";"motion_status"->"confirmation";else->"upload"})
             val result=try {
-                JSONObject(Python.getInstance().getModule("picharbor_engine").callAttr("dispatch",action,value.toString(),source,callback).toString())
-            } catch (error:Exception){Diagnostics.event("error.captured",diagnostic,DiagnosticFields.error(error),"ERROR");throw EngineFailure("ENGINE_ERROR")}
+                JSONObject(Python.getInstance().getModule("picharbor_engine").callAttr("dispatch",action,value.toString(),source,activeCallback).toString())
+            } catch (error:Exception){Diagnostics.event("error.captured",diagnostic,DiagnosticFields.error(error),"ERROR");throw EngineFailure(if(activeCallback.isCancelled())"CANCELLED" else "ENGINE_ERROR")}
             if(!result.optBoolean("ok")) {
-                val code=result.optString("error","ENGINE_ERROR")
+                val code=if(activeCallback.isCancelled())"CANCELLED" else result.optString("error","ENGINE_ERROR")
                 proxy.recordOutcome(code,proxyToken)
                 throw EngineFailure(code,result.optJSONObject("_metrics"))
             }
@@ -63,6 +87,7 @@ class Engine(private val context:Context) {
             Diagnostics.event("engine.result",diagnostic,JSONObject().put("state",result.optString("state")).put("code",result.optString("error")))
             result
         } finally {
+            lease?.close();activeCallback.attachPipeline(null)
             Diagnostics.event("engine.call_finished",diagnostic,JSONObject().put("action",action).put("outcome",outcome).put("duration_ms",android.os.SystemClock.elapsedRealtime()-started))
         }
     }
@@ -104,8 +129,14 @@ object Messages {
         "ORIGINAL_VERSION_UNAVAILABLE"->"图库未提供可验证的编辑前版本，请选择保留可用版本"
         "CURRENT_VERSION_UNAVAILABLE","VERSION_RESOURCE_MISSING"->"所选照片版本暂不可用，请检查原始资源或调整版本设置"
         "PAIR_CONFIRMATION_PENDING"->"等待云端确认实况照片，请稍后重试核对"
+        "REMOTE_MOTION_PENDING","REMOTE_MOTION_NOT_INDEXED","REMOTE_MOTION_PROCESSING","REMOTE_MOTION_NOT_DYNAMIC"->"内容已保存，正在等待云端完成动态处理"
         "LIVELINK_CAPABILITY_MISSING","INVALID_SCOPE"->"电脑与手机支持的传输范围不一致，请更新两端后重试"
         "STORAGE_FULL"->"手机可用空间不足"
+        "STAGING_BUFFER_WAIT"->"等待设备资源恢复"
+        "STAGE_TIMEOUT","NO_PROGRESS_TIMEOUT"->"连接等待过久，请检查网络后重试"
+        "CLOUD_CONFIRMATION_TIMEOUT"->"云端动态处理等待已达上限，内容已保存，可稍后手动重新核对"
+        "INVALID_PIPELINE_LIMITS","INVALID_EXECUTION_POLICY"->"请输入范围内的整数。"
+        "REMOTE_NOT_VISIBLE"->"云端暂未返回提交结果，稍后核对"
         "ACCESS_LOST"->"文件夹访问权限已失效"
         else->"暂时未能完成，请稍后重试"
     }

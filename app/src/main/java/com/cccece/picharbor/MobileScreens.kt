@@ -32,15 +32,20 @@ object ActivityPresentation {
 
 @Composable
 fun ActivityScreen(vm:HarborViewModel,data:HarborUiData,archived:Boolean=false) {
-    var source by rememberSaveable { mutableStateOf("all") }
-    var status by rememberSaveable { mutableStateOf("all") }
-    var grouping by rememberSaveable { mutableStateOf("batch") }
+    var source by rememberSaveable { mutableStateOf(if(archived)data.settings.archiveSource else data.settings.activitySource) }
+    var status by rememberSaveable { mutableStateOf(if(archived)"completed" else data.settings.activityStatus) }
+    var grouping by rememberSaveable { mutableStateOf(data.settings.activityGrouping) }
+    LaunchedEffect(source,status,grouping) {
+        vm.graph.preferences.string(if(archived)"archiveSource" else "activitySource",source)
+        if(!archived)vm.graph.preferences.string("activityStatus",status)
+        vm.graph.preferences.string("activityGrouping",grouping)
+    }
     var confirmRemoval by remember { mutableStateOf(false) }
     var selecting by remember{mutableStateOf(false)}
     var selected by remember{mutableStateOf(emptySet<String>())}
     val byJob=data.items.filter{!it.hidden}.groupBy{it.jobId}
     fun matching(job:BackupJob)=byJob[job.id].orEmpty().filter { item ->
-        (item.archivedAt>0)==archived && (status=="all" || (item.state in setOf("done","exists"))==(status=="completed"))
+        (item.archivedAt>0)==archived && (status=="all" || (item.state in setOf("done","exists"))==(status=="completed")&&item.state!="cancelled")
     }
     val jobs=data.jobs.filter{!it.hidden&&(source=="all"||it.automatic==(source=="automatic"))&&matching(it).isNotEmpty()}
     val unfinished=jobs.filter { matching(it).any{item->item.state !in setOf("done","exists","cancelled")} }.map { it.id }
@@ -51,7 +56,7 @@ fun ActivityScreen(vm:HarborViewModel,data:HarborUiData,archived:Boolean=false) 
     Column(Modifier.fillMaxSize()) {
         PageTitle(if(archived)"已归档" else "活动",vm,!archived) {
             var menu by remember { mutableStateOf(false) }
-            IconButton(onClick={menu=true}) { Icon(Icons.Outlined.MoreVert,"活动选项") }
+            IconButton(onClick={menu=true}) { LIcon(Icons.Outlined.MoreVert,"活动选项") }
             DropdownMenu(expanded=menu,onDismissRequest={menu=false}) {
                 DropdownMenuItem(text={LText("按批次分组")},onClick={grouping="batch";menu=false})
                 DropdownMenuItem(text={LText("按来源分组")},onClick={grouping="source";menu=false})
@@ -70,7 +75,7 @@ fun ActivityScreen(vm:HarborViewModel,data:HarborUiData,archived:Boolean=false) 
         Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal=16.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             listOf("all" to "全部来源","manual" to "手动","automatic" to "自动").forEach{(id,label)->FilterChip(selected=source==id,onClick={source=id},label={LText(label)})}
         }
-        Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal=16.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+        if(!archived)Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal=16.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             listOf("all" to "全部状态","unfinished" to "未完成","completed" to "已完成").forEach{(id,label)->FilterChip(selected=status==id,onClick={status=id},label={LText(label)})}
         }
         LazyColumn(contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
@@ -79,7 +84,7 @@ fun ActivityScreen(vm:HarborViewModel,data:HarborUiData,archived:Boolean=false) 
             if(grouping=="none") {
                 items(jobs.flatMap(::matching),key={it.id}) { item ->
                     Surface(onClick={vm.showItem(item)},shape=MaterialTheme.shapes.large,color=MaterialTheme.colorScheme.surfaceContainerLow) {
-                        Column(Modifier.fillMaxWidth().padding(16.dp)) {LText(item.name);LText(phaseLabel(item.state),style=MaterialTheme.typography.bodySmall)}
+                        Column(Modifier.fillMaxWidth().padding(16.dp)) {LText(item.name,localize=false);LText(phaseLabel(item.state),style=MaterialTheme.typography.bodySmall)}
                     }
                 }
             } else groups.forEach { (title,rows) ->
@@ -91,7 +96,7 @@ fun ActivityScreen(vm:HarborViewModel,data:HarborUiData,archived:Boolean=false) 
                         Column(Modifier.fillMaxWidth().padding(16.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
                             LText(if(grouping=="batch" && (stats?.total?:0)>1)"备份批次 · ${stats?.total} 项" else members.firstOrNull()?.name?:if(job.automatic)"自动备份" else "手动备份",style=MaterialTheme.typography.titleMedium)
                             LText(dateFormat.format(Instant.ofEpochMilli(job.created)),style=MaterialTheme.typography.bodySmall)
-                            LText("${jobLabel(job.state)} · 已备份 ${stats?.succeeded?:0} / ${stats?.total?:0}")
+                            LText("${localize(jobLabel(job.state))} · 已备份 ${stats?.succeeded?:0} / ${stats?.total?:0}")
                             if(members.size!=byJob[job.id].orEmpty().size)LText("当前筛选 ${members.size} 项",style=MaterialTheme.typography.bodySmall)
                             Row {
                                 if(job.state=="paused")TextButton(onClick={vm.resume(job.id)}){LText("继续")}
@@ -107,7 +112,7 @@ fun ActivityScreen(vm:HarborViewModel,data:HarborUiData,archived:Boolean=false) 
     }
     if(confirmRemoval)AlertDialog(onDismissRequest={confirmRemoval=false},title={LText("移除未完成任务？")},text={LText("仅处理当前筛选结果，保留本机和云端照片。同一版本不再自动加入，仍可手动备份。")},confirmButton={TextButton(onClick={vm.removeBatch(unfinished);confirmRemoval=false}){LText("停止并移除")}},dismissButton={TextButton(onClick={confirmRemoval=false}){LText("取消")}})
     if(selecting)AlertDialog(onDismissRequest={selecting=false},title={LText(if(archived)"选择取消归档" else "选择归档")},text={Column(Modifier.verticalScroll(rememberScrollState())){
-        archivable.forEach{item->Row{Checkbox(item.id in selected,onCheckedChange={checked->selected=if(checked)selected+item.id else selected-item.id});LText(item.name)}}
+        archivable.forEach{item->Row{Checkbox(item.id in selected,onCheckedChange={checked->selected=if(checked)selected+item.id else selected-item.id});LText(item.name,localize=false)}}
     }},confirmButton={TextButton(onClick={vm.archiveSelected(selected.toList(),archived);selecting=false},enabled=selected.isNotEmpty()){LText("完成")}},dismissButton={TextButton(onClick={selecting=false}){LText("取消")}})
 }
 
@@ -144,6 +149,20 @@ fun UnifiedSettingsScreen(vm:HarborViewModel,data:HarborUiData,onPermissions:()-
         }
     }
     if(restore)AlertDialog(onDismissRequest={restore=false},title={LText("恢复默认设置？")},text={LText("关闭自动备份并重新确认范围。账号、照片、历史任务、语言及外观会保留，不会重新上传照片。")},confirmButton={TextButton(onClick={restore=false;vm.restoreDefaults()}){LText("恢复默认设置")}},dismissButton={TextButton(onClick={restore=false}){LText("取消")}})
+}
+
+@Composable
+fun ConfirmationSettingsScreen(vm:HarborViewModel,data:HarborUiData) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        PageTitle("高级备份检查",vm)
+        Column(Modifier.padding(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+            ToggleRow("等待云端完成动态处理","照片和视频保存后，继续等待云端识别动态内容",data.settings.strictConfirmation,
+                enabled=!vm.busy){vm.setBoolean("strictConfirmation",it)}
+            Helper("默认关闭。开启后，已保存的内容仍会显示已备份，任务会继续等待动态处理，不会重新上传。")
+            Button(onClick=vm::applyConfirmationPolicy,enabled=!vm.busy&&data.items.any{it.state=="waiting_confirmation"}){LText("对等待确认的任务使用此设置")}
+            Helper("只影响等待确认的任务，保留手动暂停，不改变已完成任务。")
+        }
+    }
 }
 
 @Composable

@@ -73,7 +73,7 @@ object ScopePolicy {
      * that is entirely absent) falls back to the local check, and only an
      * unknown-version scope error denies outright.
      */
-    suspend fun evaluate(core: HarborCore, settings: HarborSettings, media: MediaEntry): ScopeDecision {
+    suspend fun evaluate(core: HarborCore, settings: HarborSettings, media: MediaEntry,partner:MediaEntry?=null): ScopeDecision {
         if (!core.available()) return ScopeDecision.DeniedUnknownScopeVersion("ENGINE_ERROR")
         val scope = scopeJson(settings)
         // "advanced" with no albums selected means nothing is selected:
@@ -86,7 +86,7 @@ object ScopePolicy {
             .put("local_id", media.id).put("filename", media.name)
             .put("size", media.size).put("created_at", media.captured / 1000)
             .put("media_kind", if (media.video) "video" else "photo")
-            .put("albums", JSONArray().put(media.folderKey))
+            .put("albums", JSONArray(listOfNotNull(media,partner).flatMap{row->listOf(row.folderKey)+if(row.source=="media"&&row.folderName.equals("Camera",true))listOf("@camera") else emptyList()}.distinct()))
         val result = core.evaluateScope(scope, asset)
         if (result.optBoolean("ok")) {
             // The core answers {"in_scope": bool, "reason": str}.

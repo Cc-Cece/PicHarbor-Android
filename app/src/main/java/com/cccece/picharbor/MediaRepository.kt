@@ -22,6 +22,7 @@ import java.io.FileOutputStream
 import java.util.UUID
 
 class MediaRepository(private val context: Context, private val dao: HarborDao, private val preferences: Preferences) {
+    val revision=java.util.concurrent.atomic.AtomicLong(0)
     private val scanMutex = Mutex()
     private var observer: ContentObserver? = null
     private var changeJob: Job? = null
@@ -45,12 +46,13 @@ class MediaRepository(private val context: Context, private val dao: HarborDao, 
                 val volumes=MediaStore.getExternalVolumeNames(context)
                 for(volume in volumes) scanVolume(volume,stamp)
                 completed += "media"
-            } catch (_:SecurityException) { /* Keep indexed rows: permission may be partial/revoked mid-scan. */ }
-        }
+            } catch (_:SecurityException) { /* A later scan reflects a permission change. */ }
+        } else dao.removeMediaSource("media")
         for(tree in preferences.get().trees) {
             try { scanTree(tree,stamp);completed+=tree } catch (_:Exception) { /* Re-authorize from folders page. */ }
         }
         if(completed.isNotEmpty()) dao.finishScan(stamp,completed)
+        revision.incrementAndGet()
     } }
     private suspend fun scanVolume(volume:String, stamp:Long) {
         val uri=MediaStore.Files.getContentUri(volume)
@@ -109,7 +111,7 @@ class MediaRepository(private val context: Context, private val dao: HarborDao, 
                 MediaEntry(uri.toString(),name,context.contentResolver.getType(uri)?:"image/jpeg",size,modified,modified,"manual","手动选择","手动选择","manual",System.currentTimeMillis())
             }.getOrNull()
         }
-        dao.putScannedMedia(list);list.map{it.id}
+        dao.putScannedMedia(list);revision.incrementAndGet();list.map{it.id}
     }
     fun current(media:MediaEntry):Pair<Long,Long>? = try {
         if(media.source=="media") {
@@ -125,10 +127,10 @@ class MediaRepository(private val context: Context, private val dao: HarborDao, 
 }
 
 /** Java methods called by Python; fd ownership stays with the returned handle. */
-class SourceHandle(val path:String, val size:Long, private val input:android.os.ParcelFileDescriptor?, private val temporary:File?) : AutoCloseable {
+class SourceHandle(val path:String, val size:Long, private val input:android.os.ParcelFileDescriptor?, private val temporary:File?,private val release:()->Unit={}) : AutoCloseable {
     private val reference=DiagnosticContext()
     init {Diagnostics.event("resource.opened",reference,org.json.JSONObject().put("source_kind",if(temporary==null)"file_descriptor" else "staging").put("source_size",size))}
-    override fun close(){try {input?.close();temporary?.delete()} finally {Diagnostics.event("resource.closed",reference)}}
+    override fun close(){try {input?.close();temporary?.delete()} finally {release();Diagnostics.event("resource.closed",reference)}}
 }
 class SourceBridge(private val context:Context) {
     fun open(uri:String,name:String):SourceHandle {
@@ -153,9 +155,15 @@ class SourceBridge(private val context:Context) {
         val cache=File(context.cacheDir,"staging").apply{mkdirs()}
         val extension=name.substringAfterLast('.',"bin").filter{it.isLetterOrDigit()}.take(8)
         val file=File(cache,"${UUID.randomUUID()}.$extension")
+        val pipeline=(context.applicationContext as PicHarborApp).graph.pipeline
+        val reservation=UUID.randomUUID().toString()
+        pipeline.beginStaging(reservation)
         try {
-            android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { input -> FileOutputStream(file).use { input.copyTo(it,1024*1024) } }
-            return SourceHandle(file.absolutePath,file.length(),null,file)
-        } catch(error:Exception){runCatching{descriptor.close()};file.delete();throw error}
+            android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { input -> FileOutputStream(file).use { output ->
+                val buffer=ByteArray(1024*1024)
+                while(true){val count=input.read(buffer);if(count<0)break;pipeline.reserveStaging(reservation,count);output.write(buffer,0,count)}
+            } }
+            return SourceHandle(file.absolutePath,file.length(),null,file){pipeline.endStaging(reservation)}
+        } catch(error:Exception){runCatching{descriptor.close()};file.delete();pipeline.endStaging(reservation);throw error}
     }
 }

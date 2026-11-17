@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 import requests
 import harbor_diagnostics as diag
+import harbor_android_deadline as protection
 from gpmc.api import Api
 from gpmc.client import Client
 from gpmc.db_update_parser import parse_db_update
@@ -34,13 +35,21 @@ class MobileApi(Api):
         self.auth_lock = threading.RLock()
 
     @property
+    def timeout(self):
+        return protection.seconds(getattr(self,'_base_timeout',60))
+
+    @timeout.setter
+    def timeout(self,value):
+        self._base_timeout=value
+
+    @property
     def bearer_token(self):
         with diag.observed_lock(self.auth_lock, "auth_lock"):
             return super().bearer_token
 
     def _new_session(self):
         # Retry is controlled per item below, rather than multiplying urllib3 retries.
-        session = requests.Session()
+        session = protection.session()
         session.verify = True
         session.trust_env = False
         if self.proxy:
@@ -187,6 +196,7 @@ class MobileService:
             raise Cancelled()
 
     def emit(self, callback, phase, completed=0, total=0):
+        protection.progress(phase,completed)
         diag.progress(phase, completed, total)
         self.check(callback)
         if callback:
@@ -216,6 +226,18 @@ class MobileService:
 
     def process(self, item, bridge, callback):
         self.check(callback)
+        from gpmc.protocol import Protocol
+        from types import SimpleNamespace
+        task=item.get('task_id','')
+        if not re.fullmatch(r'[a-zA-Z0-9-]{1,100}',task):
+            from gpmc.exceptions import ProtocolError
+            raise ProtocolError('INVALID_ARGUMENT')
+        staging=self.home/'ordinary-staging'
+        staging.mkdir(exist_ok=True)
+        receipt=staging/(task+'.receipt')
+        receipt_digest=staging/(task+'.digest.json')
+        fence=staging/(task+'.submitted')
+        protocol=Protocol(SimpleNamespace(api=self.client.api,staging=staging))
         with diag.operation("source_open"):
             handle = bridge.open(item["uri"], item["name"])
         diag.emit("resource.opened", {"source_size": int(handle.getSize())})
@@ -227,6 +249,7 @@ class MobileService:
                 return {**result, "state": "failed", "error": "SOURCE_CHANGED"}
             if digest["size"] != int(handle.getSize()):
                 return {**result, "state": "failed", "error": "SOURCE_CHANGED"}
+            self.emit(callback,"waiting_content")
             with diag.observed_lock(self.content_locks[int(digest["sha1"][:8],16) % len(self.content_locks)], "content_lock"):
                 self.emit(callback, "checking", 0, digest["size"])
                 if item.get("lookup_fresh"):
@@ -238,8 +261,8 @@ class MobileService:
                     remote = self.client.api.find_remote_media_by_hash(bytes.fromhex(digest["sha1"]))
                 if remote:
                     result.update(remote_key=remote, origin=result["origin"] or "content_exists")
-                elif item.get("remote_key"):
-                    return {**result, "state": "failed", "error": "REMOTE_MISSING"}
+                elif fence.exists() or item.get("remote_key"):
+                    return {**result, "state": "waiting_confirmation", "error": "REMOTE_NOT_VISIBLE"}
                 else:
                     if item.get("same_name"):
                         self.synchronize(callback)
@@ -247,26 +270,45 @@ class MobileService:
                             candidates = [json.loads(row[0]) for row in db.execute("SELECT payload FROM cloud")]
                         if any(x.get("name") == item["name"] for x in candidates):
                             return {**result, "state": "filename_skipped", "error": "FILENAME_ONLY"}
-                    maximum = max(0, min(3, int(item.get("retries", 3))))
+                    maximum = max(0, min(10, int(item.get("retries", 3))))
                     for attempt in range(maximum + 1):
                         try:
                             self.check(callback)
-                            token = self.client.api.get_upload_token(
-                                __import__("base64").b64encode(bytes.fromhex(digest["sha1"])).decode(), digest["size"])
-                            with open(path, "rb") as stream:
-                                upload = self.client.api.upload_file(UploadReader(stream, digest["size"],
-                                    lambda current: self.emit(callback, "uploading", current, digest["size"])), token)
+                            if fence.exists():
+                                remote=self.client.api.find_remote_media_by_hash(bytes.fromhex(digest['sha1']))
+                                if not remote:return {**result,'state':'waiting_confirmation','error':'REMOTE_NOT_VISIBLE'}
+                                result.update(remote_key=remote,origin='uploaded');break
+                            if not receipt.exists():
+                                self.emit(callback,'checking')
+                                token = self.client.api.get_upload_token(
+                                    __import__("base64").b64encode(bytes.fromhex(digest["sha1"])).decode(), digest["size"])
+                                with open(path, "rb") as stream:
+                                    self.emit(callback,"uploading",0,digest["size"])
+                                    raw = self.client.api.upload_file(UploadReader(stream, digest["size"],
+                                        lambda current: self.emit(callback, "uploading", current, digest["size"])), token,raw_response=True)
+                                if not raw or len(raw)>4*1024*1024:
+                                    raise ValueError('INVALID_UPLOAD_RESPONSE')
+                                temporary=receipt.with_suffix('.part')
+                                with temporary.open('wb') as output:
+                                    output.write(raw);output.flush();os.fsync(output.fileno())
+                                temporary.replace(receipt)
+                                receipt_digest.write_text(json.dumps(digest),encoding='utf-8')
+                            elif not receipt_digest.exists() or json.loads(receipt_digest.read_text(encoding='utf-8'))!=digest:
+                                from gpmc.exceptions import ProtocolError
+                                raise ProtocolError('SOURCE_CHANGED')
                             self.check(callback)
                             # Verify the source again before committing an immutable content hash.
                             final = self.hashes(path, callback)
                             if final != digest:
                                 return {**result, "state": "failed", "error": "SOURCE_CHANGED"}
                             self.emit(callback, "finalizing", digest["size"], digest["size"])
-                            quality = item.get("quality", "original")
-                            remote = self.client.api.commit_upload(upload, item["name"], bytes.fromhex(digest["sha1"]),
-                                quality="saver" if quality == "saver" else "original",
-                                model="Pixel 2" if quality == "saver" else ("Pixel 8" if quality == "quota" else "Pixel XL"),
-                                upload_timestamp=int(item.get("modified", 0)) // 1000 or None)
+                            from gpmc.live import LiveProtocol
+                            LiveProtocol(protocol).receipt({'response_path':str(receipt.resolve())})
+                            with fence.open('xb') as output:
+                                output.write(b'submitted');output.flush();os.fsync(output.fileno())
+                            remote=protocol.dispatch('commit_resource',{**digest,'name':item['name'],
+                                'quality':item.get('quality','original'),'response_path':str(receipt.resolve()),
+                                'modified_at':int(item.get('modified',0))//1000 or None})['remote_key']
                             result.update(remote_key=remote, origin="uploaded")
                             break
                         except Exception as error:
@@ -281,6 +323,8 @@ class MobileService:
                 # Persist the successful upload before any potentially failing album action.
                 if callback:
                     callback.onEvent(json.dumps({"phase": "uploaded", **result}))
+                if not item.get('retain_submission'):
+                    receipt.unlink(missing_ok=True);fence.unlink(missing_ok=True);receipt_digest.unlink(missing_ok=True)
                 try:
                     self.check(callback)
                     self.sync_album(item,result["remote_key"])
@@ -345,22 +389,33 @@ class MobileService:
                 from gpmc.motion_photo import mux_motion, motion_format
                 extension=motion_format(paths['photo'])
                 destination=folder/(task+'.motion.'+extension)
+                sources=folder/(task+'.motion.sources.json')
+                expected={'photo':resources['photo']['sha256'],'video':resources['video']['sha256'],'keyframe_us':value.get('keyframe_us')}
                 temporary=folder/(task+'.motion.part')
                 temporary.unlink(missing_ok=True)
-                try:
-                    mux_motion(paths['photo'],paths['video'],temporary,value.get('keyframe_us'))
-                    for role in ('photo','video'):
-                        if self.hashes(paths[role],callback)!={key:resources[role][key] for key in ('sha1','sha256','size')}:
-                            return {'state':'failed','error':'SOURCE_CHANGED'}
-                    temporary.replace(destination)
-                finally:temporary.unlink(missing_ok=True)
-                result=self.process({'uri':destination.as_uri(),'name':Path(value['photo']['name']).stem+'_MP.'+extension,
+                if (self.home/'ordinary-staging'/(task+'-motion.receipt')).exists() or (self.home/'ordinary-staging'/(task+'-motion.submitted')).exists():
+                    if not destination.exists() or not sources.exists() or json.loads(sources.read_text(encoding='utf-8'))!=expected:
+                        return {'state':'failed','error':'SOURCE_CHANGED'}
+                else:
+                    try:
+                        mux_motion(paths['photo'],paths['video'],temporary,value.get('keyframe_us'))
+                        for role in ('photo','video'):
+                            if self.hashes(paths[role],callback)!={key:resources[role][key] for key in ('sha1','sha256','size')}:
+                                return {'state':'failed','error':'SOURCE_CHANGED'}
+                        temporary.replace(destination)
+                        sources.write_text(json.dumps(expected),encoding='utf-8')
+                    finally:temporary.unlink(missing_ok=True)
+                result=self.process({'task_id':task+'-motion','retain_submission':True,'uri':destination.as_uri(),'name':Path(value['photo']['name']).stem+'_MP.'+extension,
                     'quality':value.get('quality','original'),'album_mode':'none','modified':value.get('modified',0),'retries':value.get('retries',3)},bridge,callback)
-                if result.get('state') in ('done','exists'):
+                if result.get('state') in ('done','exists','album_pending'):
                     key=self.client.api.find_remote_media_by_hash(bytes.fromhex(result['sha1']))
                     if key:
+                        destination.unlink(missing_ok=True);sources.unlink(missing_ok=True)
+                        for suffix in ('.receipt','.submitted','.digest.json'):
+                            (self.home/'ordinary-staging'/(task+'-motion'+suffix)).unlink(missing_ok=True)
                         return self.pair_result(value,resources,key,callback)
                 return {'state':'waiting_confirmation','error':'PAIR_CONFIRMATION_PENDING'}
+            self.emit(callback,'confirming')
             status=protocol.dispatch('confirm_pair',resources)
             fence=folder/(task+'.submitted')
             route='reconcile' if value.get('strategy')=='stepwise' else 'joint'
@@ -370,8 +425,10 @@ class MobileService:
                     resource=resources[role]
                     receipt=folder/(task+'.'+role+'.receipt')
                     if not receipt.exists():
+                        self.emit(callback,'checking')
                         token=self.client.api.get_upload_token(base64.b64encode(bytes.fromhex(resource['sha1'])).decode(),resource['size'])
                         with open(paths[role],'rb') as stream:
+                            self.emit(callback,'uploading',0,resource['size'])
                             raw=self.client.api.upload_file(UploadReader(stream,resource['size'],lambda current:self.emit(callback,'uploading',current,resource['size'])),token,raw_response=True)
                         temporary=receipt.with_suffix('.part');temporary.write_bytes(raw);temporary.replace(receipt)
                     resource['response_path']=str(receipt.resolve())
@@ -379,6 +436,7 @@ class MobileService:
                         return {'state':'failed','error':'SOURCE_CHANGED'}
                 payload={**resources,'route':route,'quality':value.get('quality','original'),
                     'created_at':int(value.get('created',0))//1000,'modified_at':int(value.get('modified',0))//1000}
+                self.emit(callback,'finalizing')
                 if route=='reconcile':
                     photo_fence=folder/(task+'.photo-submitted')
                     photo_status=protocol.dispatch('confirm_resource',resources['photo'])
@@ -393,6 +451,7 @@ class MobileService:
                 with fence.open('xb') as output:
                     output.write(b'submitted');output.flush();os.fsync(output.fileno())
                 protocol.dispatch('pair_apple',payload)
+                self.emit(callback,'confirming')
                 status=protocol.dispatch('confirm_pair',resources)
             if not status['confirmed']:
                 return {'state':'waiting_confirmation','error':'PAIR_CONFIRMATION_PENDING'}
@@ -600,9 +659,13 @@ class MobileService:
         self.timing_context.values = {}
         try:
             with self.measured("engine_total"):
-                result = json.loads(self._dispatch(action, payload, bridge, callback))
+                values=json.loads(payload) if isinstance(payload,str) else payload
+                with protection.operation(action,values,callback):
+                    result = json.loads(self._dispatch(action, values, bridge, callback))
             result["_metrics"] = self.timing_context.values
             return json.dumps(result)
+        except Exception as error:
+            return json.dumps({'ok':False,'error':error_code(error)})
         finally:
             self.timing_context.values = None
 
@@ -630,6 +693,10 @@ class MobileService:
                     return json.dumps({"ok": False, "error": "ACCOUNT_CHANGED"})
                 if action == "process": result = self.process(values,bridge,callback)
                 elif action == "process_pair": result = self.process_pair(values,bridge,callback)
+                elif action == "motion_status":
+                    from types import SimpleNamespace
+                    from gpmc.protocol import Protocol
+                    result=Protocol(SimpleNamespace(api=self.client.api)).dispatch('motion_status',values)
                 elif action == "lookup": result = self.lookup(values,bridge,callback)
                 elif action == "synchronize":
                     with self.measured("cloud_sync"):

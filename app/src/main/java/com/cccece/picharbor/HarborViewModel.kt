@@ -33,8 +33,10 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
     fun taskProxy(value:String)=action {
         val job=graph.dao.job(inspectedJob.value)?:return@action
         if(job.account!=settings.value.account)return@action
-        if(graph.backup.activeJob.value==job.id)graph.backup.stopAndWait()
-        graph.dao.putJob((graph.dao.job(job.id)?:job).copy(proxyPolicy=value))
+        val wasRunning=graph.backup.activeJob.value==job.id&&job.state=="running"
+        if(wasRunning)graph.backup.stopAndWait()
+        val current=graph.dao.job(job.id)?:job
+        graph.dao.putJob(current.copy(proxyPolicy=value,state=if(wasRunning&&current.state=="paused")"queued" else current.state))
         if(job.state!="paused")graph.scheduler.launchManual(job.allowMobile)
         back()
     }
@@ -79,14 +81,10 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
             }
         }
         viewModelScope.launch {
-            combine(jobs,settings){rows,s->rows to s}.collect { (rows,s) ->
+            combine(items,settings){rows,s->rows to s}.collect { (_,s) ->
                 if(s.archiveEnabled) {
                     val threshold=System.currentTimeMillis()-s.archiveDays*86400000L
-                    rows.filter{it.account==s.account&&it.state in setOf("completed","needs_attention")&&it.completedAt in 1..threshold}
-                        .forEach { job ->
-                            graph.dao.items(job.id).filter{it.state in setOf("done","exists")&&it.archivedAt==0L&&maxOf(job.completedAt,it.unarchivedAt) in 1..threshold}
-                                .forEach{graph.dao.archiveItem(it.id,System.currentTimeMillis())}
-                        }
+                    graph.dao.archiveEligible(s.account,threshold,System.currentTimeMillis())
                 }
             }
         }
@@ -110,10 +108,20 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
             finally{busy=false}
         }
     }
+    fun proxyAction(block:suspend ()->Unit)=action {
+        val id=graph.backup.activeJob.value
+        val running=if(id.isNotBlank())graph.dao.job(id) else null
+        if(running!=null)graph.backup.stopAndWait()
+        try {block()} finally {
+            if(running!=null&&running.state=="running") {
+                graph.dao.job(id)?.takeIf{it.state=="paused"}?.let{graph.dao.putJob(it.copy(state="queued"));graph.scheduler.launchManual(it.allowMobile)}
+            }
+        }
+    }
     fun refresh()=action {
         withContext(Dispatchers.IO){graph.media.scan()};permissionRevision++
     }
-    fun permissionsChanged(){permissionRevision++;refresh()}
+    fun permissionsChanged(){permissionRevision++;if(busy)afterAction{refresh()} else refresh()}
     fun login(token:String)=action {
         graph.login(token);loginRequired=false;message="账号已连接"
         if(graph.dao.nextJob(graph.preferences.get().account)!=null)graph.scheduler.launchManual()
@@ -158,13 +166,32 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
         sheet=""
     }
     fun setBoolean(key:String,value:Boolean)=action {
+        if(key=="wifi"){applyNetworkPolicy(if(value)"none" else "all");return@action}
+        val active=if(key=="proxyEnabled")graph.backup.activeJob.value.takeIf{it.isNotBlank()}?.let{graph.dao.job(it)} else null
+        if(active!=null)graph.backup.stopAndWait()
         if (key=="auto" && value && !settings.value.onboarded) { navigate("folders"); return@action }
         if (key=="wifi") graph.preferences.mobile(if(value) "none" else "all")
         else graph.preferences.boolean(key,value)
         if(key=="wifi") { graph.backup.stopAndWait() }
         graph.scheduler.configure()
+        if(active!=null&&active.state=="running")graph.dao.job(active.id)?.takeIf{it.state=="paused"}?.let{graph.dao.putJob(it.copy(state="queued"));graph.scheduler.launchManual(it.allowMobile)}
     }
     fun restoreDefaults()=action { graph.backup.stopAndWait(); graph.preferences.restoreBackupDefaults(); graph.scheduler.configure(); message="已恢复备份默认设置，请重新确认范围" }
+    fun applyConfirmationPolicy()=action {
+        val settings=graph.preferences.get()
+        jobs.value.filter{it.account==settings.account}.forEach { job ->
+            if(graph.dao.items(job.id).any{it.state=="waiting_confirmation"})
+                graph.dao.putJob(job.copy(strictConfirmation=settings.strictConfirmation))
+        }
+        graph.scheduler.launchManual()
+        message="已更新等待确认任务的检查设置"
+    }
+    fun savePipeline(mode:String,limits:String,execution:String)=action {
+        graph.preferences.string("pipelineLimits",limits)
+        graph.preferences.string("pipelineMode",mode)
+        graph.preferences.string("executionPolicy",execution)
+        graph.scheduler.configure();back()
+    }
     fun pauseBatch(ids:List<String>)=action { graph.backup.pauseJobs(ids) }
     fun resumeBatch(ids:List<String>)=action { graph.backup.resumeJobs(ids); graph.scheduler.launchManual() }
     fun removeBatch(ids:List<String>)=action {
@@ -176,7 +203,11 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
     fun archiveSelected(ids:List<String>,restore:Boolean)=action{ids.forEach{graph.dao.archiveItem(it,if(restore)0 else System.currentTimeMillis())}}
     fun archiveBatch(ids:List<String>,restore:Boolean=false)=action {
         val time=if(restore)0 else System.currentTimeMillis()
-        ids.forEach { id->graph.dao.items(id).forEach{graph.dao.archiveItem(it.id,time)};graph.dao.archiveJob(id,time) }
+        ids.forEach { id->
+            val members=graph.dao.items(id)
+            members.filter{it.state in setOf("done","exists")}.forEach{graph.dao.archiveItem(it.id,time)}
+            if(members.all{it.state in setOf("done","exists","cancelled")})graph.dao.archiveJob(id,time)
+        }
     }
 
     fun setAllFolders(value:Boolean)=action {
@@ -188,7 +219,14 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
         graph.preferences.string(key,value);graph.scheduler.configure()
     }
     fun setInteger(key:String,value:Int)=action {graph.preferences.integer(key,value)}
-    fun setMobile(value:String)=action {graph.preferences.mobile(value);graph.scheduler.configure();sheet=""}
+    private suspend fun applyNetworkPolicy(value:String) {
+        val active=graph.backup.activeJob.value.takeIf{it.isNotBlank()}?.let{graph.dao.job(it)}
+        if(active!=null)graph.backup.stopAndWait()
+        graph.preferences.mobile(value)
+        if(active!=null&&active.state=="running")graph.dao.job(active.id)?.takeIf{it.state=="paused"}?.let{graph.dao.putJob(it.copy(state="queued"))}
+        graph.scheduler.configure();graph.scheduler.restorePending();sheet=""
+    }
+    fun setMobile(value:String)=action {applyNetworkPolicy(value)}
     fun folder(key:String,checked:Boolean)=action {
         val current=graph.preferences.get();var chosen=current.folders
         if(current.allFolders)return@action

@@ -39,6 +39,14 @@ class PicHarborApp:Application(), coil.ImageLoaderFactory, androidx.work.Configu
             runCatching { graph.backup.recoverCoreTasks() }
             // Staging contains only app-owned temporary copies, never original media.
             File(cacheDir,"staging").listFiles()?.forEach{it.delete()}
+            val runtime=File(filesDir,"runtime")
+            File(runtime,"pair-staging").listFiles()?.forEach { file ->
+                val id=file.name.substringBefore(".motion.")
+                if(id.matches(Regex("[a-zA-Z0-9-]{1,100}"))&&file.name in listOf("$id.motion.part","$id.motion.jpg","$id.motion.heic","$id.motion.sources.json")) {
+                    val uncertain=File(runtime,"ordinary-staging/$id-motion.receipt").exists()||File(runtime,"ordinary-staging/$id-motion.submitted").exists()
+                    if(file.name.endsWith(".part")||!uncertain)file.delete()
+                }
+            }
             graph.scheduler.configure()
             graph.scheduler.restorePending()
             } finally { graph.startup.complete(Unit) }
@@ -67,6 +75,7 @@ class AppGraph(val app:Application,val engineReady:Boolean) {
     val harborCore=HarborCore(dao=dao)
     val proxy=ProxyManager(this)
     val computer=LiveLinkTransport(this)
+    val pipeline=BackupPipeline(this)
     val backup=BackupRepository(this)
     val scheduler=Scheduler(this)
     fun refreshProfile(account:String,force:Boolean=false)=scope.launch {

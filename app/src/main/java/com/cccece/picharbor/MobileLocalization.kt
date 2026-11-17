@@ -15,6 +15,15 @@ import java.util.Locale
 
 private val LocalTranslation=staticCompositionLocalOf<(String)->String>{{it}}
 
+@Composable
+fun localize(value:String):String=LocalTranslation.current(value)
+
+@Composable
+fun LIcon(imageVector:androidx.compose.ui.graphics.vector.ImageVector,contentDescription:String?,modifier:Modifier=Modifier,
+    tint:Color=androidx.compose.material3.LocalContentColor.current) {
+    androidx.compose.material3.Icon(imageVector,contentDescription?.let{LocalTranslation.current(it)},modifier,tint)
+}
+
 private class MobileTranslations(private val table:JSONObject) {
     private data class Template(val expression:Regex,val indices:List<String>,val translated:String,val literalLength:Int)
     private val templates=table.keys().asSequence().mapNotNull { key ->
@@ -65,8 +74,8 @@ fun LText(text:String,modifier:Modifier=Modifier,color:Color=Color.Unspecified,f
     fontStyle:FontStyle?=null,fontWeight:FontWeight?=null,fontFamily:FontFamily?=null,letterSpacing:TextUnit=TextUnit.Unspecified,
     textDecoration:TextDecoration?=null,textAlign:TextAlign?=null,lineHeight:TextUnit=TextUnit.Unspecified,
     overflow:TextOverflow=TextOverflow.Clip,softWrap:Boolean=true,maxLines:Int=Int.MAX_VALUE,minLines:Int=1,
-    style:TextStyle=LocalTextStyle.current) {
-    androidx.compose.material3.Text(text=LocalTranslation.current(text),modifier=modifier,color=color,fontSize=fontSize,fontStyle=fontStyle,
+    style:TextStyle=LocalTextStyle.current,localize:Boolean=true) {
+    androidx.compose.material3.Text(text=if(localize)LocalTranslation.current(text) else text,modifier=modifier,color=color,fontSize=fontSize,fontStyle=fontStyle,
         fontWeight=fontWeight,fontFamily=fontFamily,letterSpacing=letterSpacing,textDecoration=textDecoration,textAlign=textAlign,
         lineHeight=lineHeight,overflow=overflow,softWrap=softWrap,maxLines=maxLines,minLines=minLines,style=style)
 }

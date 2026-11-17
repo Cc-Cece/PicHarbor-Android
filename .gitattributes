@@ -5,6 +5,7 @@ app/src/main/python/picharbor_engine.py text eol=lf
 app/src/main/python/harbor_diagnostics.py text eol=lf
 
 app/src/main/python/harbor_android.py text eol=lf
+app/src/main/python/harbor_android_deadline.py text eol=lf
 
 tools/sync_gpmc.py text eol=lf
 gpmc.lock.json text eol=lf

@@ -93,20 +93,20 @@ class LoginActivity : ComponentActivity() {
         }
         setContent {
             val settings by (application as PicHarborApp).graph.preferences.flow.collectAsState(initial=HarborSettings())
-            PicHarborTheme(settings) {
+            MobileLocale(settings.language) { PicHarborTheme(settings) {
                 val compact=LocalConfiguration.current.screenHeightDp<480
                 val keyboard=WindowInsets.ime.getBottom(LocalDensity.current)>0
                 BackHandler { if(web.canGoBack())web.goBack() else finish() }
                 Scaffold(modifier=Modifier.imePadding(),topBar={
                     TopAppBar(title={LText("登录 Google")},navigationIcon={
-                        IconButton(onClick={finish()}){Icon(Icons.Outlined.Close,"取消登录")}
-                    },actions={Icon(Icons.Outlined.Lock,null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.padding(end=20.dp).size(20.dp))})
+                        IconButton(onClick={finish()}){LIcon(Icons.Outlined.Close,"取消登录")}
+                    },actions={LIcon(Icons.Outlined.Lock,null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.padding(end=20.dp).size(20.dp))})
                 }) { padding ->
                     Column(Modifier.fillMaxSize().padding(padding)) {
                         AnimatedVisibility(!compact&&!keyboard) {
                           Row(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
                             Surface(shape=MaterialTheme.shapes.medium,color=MaterialTheme.colorScheme.primaryContainer) {
-                                Icon(Icons.Outlined.CloudDone,null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.padding(12.dp).size(26.dp))
+                                LIcon(Icons.Outlined.CloudDone,null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.padding(12.dp).size(26.dp))
                             }
                             Column(Modifier.weight(1f)) {
                                 LText("连接账号，安心备份",style=MaterialTheme.typography.titleMedium)
@@ -116,7 +116,7 @@ class LoginActivity : ComponentActivity() {
                         }
                         Surface(color=MaterialTheme.colorScheme.surfaceContainerLow,modifier=Modifier.fillMaxWidth()) {
                             Row(Modifier.padding(horizontal=20.dp,vertical=10.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                                Icon(Icons.Outlined.Lock,null,modifier=Modifier.size(14.dp),tint=MaterialTheme.colorScheme.primary)
+                                LIcon(Icons.Outlined.Lock,null,modifier=Modifier.size(14.dp),tint=MaterialTheme.colorScheme.primary)
                                 LText("Google 登录 · HTTPS",style=MaterialTheme.typography.labelMedium,modifier=Modifier.weight(1f))
                                 AnimatedContent(loading,label="login-status") { pending -> LText(if(pending)"正在加载" else "请继续登录",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
                             }
@@ -128,7 +128,7 @@ class LoginActivity : ComponentActivity() {
                         AnimatedVisibility(pageError.isNotEmpty()) {
                             Surface(color=MaterialTheme.colorScheme.errorContainer,modifier=Modifier.fillMaxWidth().animateContentSize()) {
                                 Row(Modifier.padding(start=20.dp,end=12.dp,top=8.dp,bottom=8.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
-                                    Icon(Icons.Outlined.Info,null,tint=MaterialTheme.colorScheme.onErrorContainer)
+                                    LIcon(Icons.Outlined.Info,null,tint=MaterialTheme.colorScheme.onErrorContainer)
                                     LText(pageError,modifier=Modifier.weight(1f),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onErrorContainer)
                                     TextButton(onClick=::retry){LText("重试")}
                                 }
@@ -143,6 +143,7 @@ class LoginActivity : ComponentActivity() {
                     }
                 }
             }
+        }
         }
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
