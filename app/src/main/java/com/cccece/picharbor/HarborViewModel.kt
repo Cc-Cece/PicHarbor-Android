@@ -68,6 +68,17 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
     init {
         refresh()
         viewModelScope.launch {
+            media.map { rows -> rows.map { Triple(it.id,it.modified,it.size) } }.distinctUntilChanged().collectLatest { versions ->
+                if(versions.isNotEmpty()) {
+                    try {
+                        graph.startup.await()
+                        if(graph.engineReady)graph.backup.identifiedMedia()
+                    } catch(error:CancellationException){throw error}
+                    catch(_:Exception){ /* A later permission or library update retries metadata indexing. */ }
+                }
+            }
+        }
+        viewModelScope.launch {
             combine(jobs,settings){rows,s->rows to s}.collect { (rows,s) ->
                 if(s.archiveEnabled) {
                     val threshold=System.currentTimeMillis()-s.archiveDays*86400000L

@@ -225,7 +225,7 @@ fun PhotosScreen(vm:HarborViewModel,data:HarborUiData,onPermissions:()->Unit,onP
     val list=remember(data.media,data.backups,data.items,vm.filter,vm.type,vm.fromDate,vm.toDate,vm.libraryAlbum,data.settings.account){data.media.filter { m ->
         val s=data.status(m)
         (vm.filter=="all"||(vm.filter=="uploaded"&&s=="uploaded")||(vm.filter=="pending"&&s in setOf("pending","unknown"))||(vm.filter=="error"&&s=="error")) &&
-            (vm.type=="all"||(vm.type=="video"&&m.video)||(vm.type=="photo"&&!m.video)||(vm.type=="live"&&m.pairingID.isNotEmpty())) && m.captured>=vm.fromDate && m.captured<=vm.toDate && (vm.libraryAlbum.isEmpty()||m.folderKey==vm.libraryAlbum)
+            (vm.type=="all"||(vm.type=="video"&&m.video)||(vm.type=="photo"&&!m.video)||(vm.type=="live"&&!m.video&&m.pairingID.isNotEmpty())) && m.captured>=vm.fromDate && m.captured<=vm.toDate && (vm.libraryAlbum.isEmpty()||m.folderKey==vm.libraryAlbum)
     }}
     val groups=remember(list){list.groupBy{Instant.ofEpochMilli(it.captured).atZone(ZoneId.systemDefault()).toLocalDate()}}
     Box(Modifier.fillMaxSize()) {

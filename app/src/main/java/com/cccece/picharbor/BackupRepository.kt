@@ -65,8 +65,12 @@ class BackupRepository(private val graph:AppGraph) {
             if(!supported)media else {
                 val key="${media.id}:${media.modified}:${media.size}"
                 val identifier=identityCache[key]?:run {
-                    val response=graph.engine.call("media_identity",JSONObject().put("uri",media.id).put("name",media.name).put("video",media.video))
-                    val found=response.optString("identifier")
+                    val response=try {graph.engine.call("media_identity",JSONObject().put("uri",media.id).put("name",media.name).put("video",media.video))}
+                    catch(error:EngineFailure){
+                        if(error.code in setOf("FILE_ACCESS","ACCESS_LOST"))return@map media
+                        throw error
+                    }
+                    val found=if(response.optBoolean("embedded_motion"))LivePhotoPairing.EMBEDDED_MOTION else response.optString("identifier")
                     keyframeHints[key]=response.optBoolean("still_image_time")
                     identityCache[key]=found;found
                 }
@@ -157,8 +161,7 @@ class BackupRepository(private val graph:AppGraph) {
         // user chose those items. The cheap local includes() check below is
         // only an index pre-filter over the exact inputs the scope JSON
         // carries (folders/videos); the core remains the authority for the
-        // surviving candidates (date/type/size), and when the core predates
-        // evaluate_scope the local check is the documented fallback. An
+          // surviving candidates (date/type/size). An
         // unknown-version scope error denies the whole enqueue instead of
         // degrading into "include everything".
         val candidates=ArrayList<MediaEntry>()
@@ -529,12 +532,17 @@ class BackupRepository(private val graph:AppGraph) {
         if(graph.dao.item(item.id)?.state !in setOf("queued","album_pending","waiting_confirmation","hashing","checking","uploading","finalizing","finalizing_album"))return
         val all=identifiedMedia()
         val identified=all.firstOrNull{it.id==media.id}?:media
-        val group=LivePhotoPairing.groupFor(identified,all,job.liveStrategy)
+        val embeddedMotion=identified.pairingID==LivePhotoPairing.EMBEDDED_MOTION
+        val group=LivePhotoPairing.groupFor(identified,all,job.liveStrategy,embeddedMotion)
+        if(identified.pairingID.isNotBlank()&&!embeddedMotion&&group?.video==null) {
+            graph.dao.putItem(item.copy(state="failed",error="LIVE_PAIR_RESOURCE_MISSING",attempt=item.attempt+1))
+            return
+        }
         if(group?.video!=null) {
             processLivePhotoWithCore(job,item,media,group,settings,cancelled)
             return
         }
-        if(!processSingleWithCore(job,item,media,settings,cancelled)) {
+        if(!processSingleWithCore(job,item,identified,settings,cancelled)) {
             val current=graph.dao.item(item.id)
             if(current!=null&&graph.dao.job(job.id)?.state!="ended"&&current.state !in setOf("done","exists","cancelled","paused"))
                 graph.dao.putItem(current.copy(state="queued",error="ENGINE_ERROR"))
@@ -678,7 +686,7 @@ class BackupRepository(private val graph:AppGraph) {
             coreTask=updated
             return updated
         }
-        val mediaKind=if(media.video)"video" else "photo"
+        val mediaKind=if(media.video)"video" else if(media.pairingID==LivePhotoPairing.EMBEDDED_MOTION)"motion_photo" else "photo"
         try {
             graph.dao.putItem(item.copy(state="hashing"))
             val ready=prepareResource(job,media,diagnostic)
@@ -694,6 +702,13 @@ class BackupRepository(private val graph:AppGraph) {
                 return false
             }
             runCatching{graph.harborCore.logEvent("item.state_changed",item.id,JSONObject().put("state","created").put("filename",media.name))}
+            if(coreTask!!.optString("state") in setOf("confirming","dedup_hit")&&item.remoteKey.isNotBlank()) {
+                if(ready.remoteKey!=item.remoteKey)throw EngineFailure("REMOTE_MISSING")
+                if(!syncConfirmedAlbum(job,latest,media,item.remoteKey,cancelled))return true
+                advance(graph.harborCore.transition(coreTask!!,HarborCoreState.DONE,remoteKey=item.remoteKey,cloudConfirmed=true))
+                graph.dao.putItem(latest.copy(state=if(item.origin=="content_exists")"exists" else "done",error="",attempt=item.attempt+1))
+                return true
+            }
             if(advance(graph.harborCore.transition(coreTask!!,HarborCoreState.PREPARING))==null)return false
             val remoteKey=ready.remoteKey
             val prepared=graph.harborCore.decidePrepare(asset,remoteKey.ifEmpty{null})
@@ -711,9 +726,11 @@ class BackupRepository(private val graph:AppGraph) {
                 val hitKey=prepared.optString("remote_key")
                 if(hitKey.isNotEmpty()) {
                     advance(graph.harborCore.transition(coreTask!!,HarborCoreState.DEDUP_HIT,remoteKey=hitKey))
-                    advance(graph.harborCore.transition(coreTask!!,HarborCoreState.DONE,remoteKey=hitKey,cloudConfirmed=true))
                     val record=BackupRecord(job.account,media.id,ready.sha1,ready.sha256,hitKey,ready.size,media.modified,"unknown","content_exists",System.currentTimeMillis())
                     graph.dao.putBackup(record)
+                    latest=latest.copy(remoteKey=hitKey,origin="content_exists")
+                    if(!syncConfirmedAlbum(job,latest,media,hitKey,cancelled))return true
+                    advance(graph.harborCore.transition(coreTask!!,HarborCoreState.DONE,remoteKey=hitKey,cloudConfirmed=true))
                     graph.dao.putItem(latest.copy(state="exists",remoteKey=hitKey,sha1=ready.sha1,sha256=ready.sha256,origin="content_exists",attempt=item.attempt+1))
                     Diagnostics.event("item.state_changed",diagnostic,JSONObject().put("state","exists").put("code",""))
                     runCatching{graph.harborCore.logEvent("item.state_changed",item.id,JSONObject().put("state","dedup_hit").put("filename",media.name))}
@@ -778,6 +795,17 @@ class BackupRepository(private val graph:AppGraph) {
      * find_remote_media_by_hash call. Without those flags the engine keeps
      * its old behaviour (direct engine callers outside the core flow).
      */
+    private suspend fun syncConfirmedAlbum(job:BackupJob,item:BackupItem,media:MediaEntry,key:String,cancelled:()->Boolean):Boolean {
+        try {
+            if(cancelled())throw EngineFailure("CANCELLED")
+            graph.engine.call("sync_album",JSONObject().put("_account",job.account).put("remote_key",key)
+                .put("album_mode",job.albumMode).put("album_value",job.albumValue).put("folder",media.albumFolder),EngineCallback(cancelled))
+            return true
+        } catch(error:Exception) {
+            graph.dao.putItem(item.copy(state="album_pending",remoteKey=key,error=(error as? EngineFailure)?.code?:"ENGINE_ERROR",attempt=item.attempt+1))
+            return false
+        }
+    }
     private suspend fun transportItem(job:BackupJob,item:BackupItem,settings:HarborSettings,cancelled:()->Boolean,lookupRemoteKey:String="",lookupFresh:Boolean=false) {
         var latest=item
         val diagnostic=DiagnosticContext(job=job.id,item=item.id,attempt=UUID.randomUUID().toString())

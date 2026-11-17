@@ -144,7 +144,7 @@ fun HarborSheets(vm:HarborViewModel,data:HarborUiData,onLogin:()->Unit,onPickTre
                     TextButton(onClick=vm::albums,enabled=!vm.busy){LText("刷新相册")}
                 }
                 mode=="filter"->{
-                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){listOf("all" to "全部","photo" to "照片","video" to "视频").forEach{(key,label)->FilterChip(vm.type==key,{vm.type=key},{LText(label)})}}
+                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){listOf("all" to "全部","photo" to "照片","video" to "视频","live" to "实况").forEach{(key,label)->FilterChip(vm.type==key,{vm.type=key},{LText(label)})}}
                     LText("拍摄日期",style=MaterialTheme.typography.titleSmall)
                     OutlinedButton(onClick={dateDialog=true},modifier=Modifier.fillMaxWidth()){LText("选择日期范围")}
                     TextButton(onClick={vm.type="all";vm.fromDate=0;vm.toDate=Long.MAX_VALUE;vm.sheet=""}){LText("清除筛选")}

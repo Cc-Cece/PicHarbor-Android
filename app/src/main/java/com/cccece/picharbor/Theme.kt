@@ -30,7 +30,7 @@ fun PicHarborTheme(settings:HarborSettings,content:@Composable ()->Unit) {
             background=Color(0xFFFDF8FF),surface=Color(0xFFFDF8FF),surfaceContainer=Color(0xFFF1EAF5),surfaceContainerLow=Color(0xFFF7F1FA),surfaceContainerHigh=Color(0xFFEEE7F2))
     }
     val context=LocalContext.current
-    val activity=rememberActivity(context)
+    val activity=findActivity(context)
     val view=LocalView.current
     SideEffect {
         activity?.window?.let { window ->
@@ -48,7 +48,7 @@ fun PicHarborTheme(settings:HarborSettings,content:@Composable ()->Unit) {
     }
 }
 
-private fun rememberActivity(context:android.content.Context):android.app.Activity? {
+private fun findActivity(context:android.content.Context):android.app.Activity? {
     var current=context
     while(current is android.content.ContextWrapper) {
         if(current is android.app.Activity)return current

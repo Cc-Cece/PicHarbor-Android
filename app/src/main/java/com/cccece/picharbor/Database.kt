@@ -60,6 +60,15 @@ interface HarborDao {
     @Query("SELECT * FROM media ORDER BY captured DESC") suspend fun media(): List<MediaEntry>
     @Query("SELECT * FROM media WHERE id=:id") suspend fun media(id: String): MediaEntry?
     @Upsert suspend fun putMedia(items: List<MediaEntry>)
+    @Query("SELECT * FROM media WHERE id IN (:ids)") suspend fun mediaForIDs(ids:List<String>):List<MediaEntry>
+    @Transaction
+    suspend fun putScannedMedia(items:List<MediaEntry>) {
+        val previous=mediaForIDs(items.map{it.id}).associateBy{it.id}
+        putMedia(items.map { item ->
+            val old=previous[item.id]
+            if(old!=null&&old.modified==item.modified&&old.size==item.size)item.copy(pairingID=old.pairingID) else item
+        })
+    }
     @Query("UPDATE media SET pairingID=:pairingID WHERE id=:id AND modified=:modified AND size=:size")
     suspend fun updatePairingID(id:String,modified:Long,size:Long,pairingID:String)
     @Query("DELETE FROM media WHERE id=:id") suspend fun removeMedia(id: String)

@@ -13,24 +13,19 @@ import android.net.Uri
  *   as an explicit choice. An existing setting is never overwritten by an
  *   upgrade: [HarborSettings.livePhotoPairing] is only ever written when
  *   the user changes it; a missing key simply reads as "original".
- * - A photo and a video pair when they share a filename stem, live in the
- *   same folder, and were captured within [PAIR_CAPTURE_WINDOW_MS]. A
- *   single JPEG can also carry an embedded Motion Photo video (XMP
- *   `GCamera:MicroVideo` marker near the start of the file); that is
- *   detected by [hasEmbeddedMotion] and counts as a live photo with one
- *   local file and two resources.
- * - The core decides per resource (one `decide_prepare` call with the
- *   asset's `resources` list and `remote_keys` keyed by role); joint
- *   submission uploads the missing resources and then makes ONE
- *   submitting -> confirming -> done pass for the pair; stepwise
- *   (separate core tasks per resource) is the fallback when the core does
- *   not know live_photo yet. Either way a Live Photo is confirmed as one
- *   media item, never per half.
- * - Unverified Live Photos are never cleaned up by PicHarbor: if no pair
- *   and no embedded motion can be confirmed, the item is processed as an
- *   ordinary photo and its local original is always kept.
+ * - Photo/video pairs require the same explicit Apple content identifier.
+ *   Filename, folder and capture time do not establish a pairing.
+ * - Embedded JPEG motion is indexed by the shared parser, which validates
+ *   declared XMP length against an appended video header. The file remains
+ *   byte-for-byte intact during upload. [hasEmbeddedMotion] is only a legacy
+ *   marker helper and is not the production evidence check.
+ * - Joint and stepwise submission are explicit task strategies. Both retain
+ *   one task and require the cloud to confirm the pair as one media item.
+ *   A missing partner is reported, rather than silently backing up a still.
+ * - PicHarbor never deletes local originals.
  */
 object LivePhotoPairing {
+    const val EMBEDDED_MOTION="@embedded-motion"
     const val ORIGINAL = "original"
     const val MOTION = "motion"
     const val PAIR_CAPTURE_WINDOW_MS = 5_000L

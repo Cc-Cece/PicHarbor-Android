@@ -57,7 +57,7 @@ class Engine(private val context:Context) {
                 proxy.recordOutcome(code,proxyToken)
                 throw EngineFailure(code,result.optJSONObject("_metrics"))
             }
-            if(action in setOf("process","process_pair","connect","albums","reconcile","synchronize","account_profile"))
+            if(action in setOf("process","process_pair","connect","albums","sync_album","reconcile","synchronize","account_profile"))
                 proxy.recordOutcome(result.optString("error").takeIf{it.isNotBlank()},proxyToken)
             outcome="success"
             Diagnostics.event("engine.result",diagnostic,JSONObject().put("state",result.optString("state")).put("code",result.optString("error")))
@@ -95,6 +95,13 @@ object Messages {
         "CANCELLED"->"操作已暂停"
         "PROXY_INVALID","PROXY_INVALID_SCHEME","PROXY_INVALID_HOST","PROXY_INVALID_PORT","PROXY_INVALID_USERNAME"->"代理设置无效，请检查代理地址、端口和账号"
         "PROXY_TLS_VERIFICATION_DISABLED"->"代理要求保留 TLS 校验，请勿关闭"
+        "PROXY_UNAVAILABLE"->"当前代理节点不可用，请等待恢复或选择其他节点"
+        "LIVE_PAIR_METADATA_MISMATCH"->"未找到一致的实况照片标识，请选择保留原始元数据的照片和视频"
+        "LIVE_PAIR_RESOURCE_MISSING"->"实况照片的原始照片或视频不可用，请检查文件及访问权限"
+        "LIVE_KEYFRAME_MISSING"->"无法读取实况照片的关键帧时间，请改用原始照片配对"
+        "MOTION_FORMAT_UNSUPPORTED"->"此照片格式暂不支持动态照片封装，请改用原始照片配对"
+        "PAIR_CONFIRMATION_PENDING"->"等待云端确认实况照片，请稍后重试核对"
+        "LIVELINK_CAPABILITY_MISSING","INVALID_SCOPE"->"电脑与手机支持的传输范围不一致，请更新两端后重试"
         "STORAGE_FULL"->"手机可用空间不足"
         "ACCESS_LOST"->"文件夹访问权限已失效"
         else->"暂时未能完成，请稍后重试"

@@ -68,10 +68,10 @@ class MediaRepository(private val context: Context, private val dao: HarborDao, 
                 val folder=relative.substringAfterLast('/').ifBlank { "照片" }
                 batch+=MediaEntry(id,cursor.getString(1)?:"照片",cursor.getString(2)?:"image/jpeg",cursor.getLong(3),cursor.getLong(4)*1000,
                     cursor.getLong(7).takeIf{it>0}?:cursor.getLong(5)*1000,"$volume|$relative",folder,folder,"media",stamp)
-                if(batch.size>=200){dao.putMedia(batch.toList());batch.clear()}
+                if(batch.size>=200){dao.putScannedMedia(batch.toList());batch.clear()}
             }
         } ?: throw SecurityException("MEDIA_UNAVAILABLE")
-        if(batch.isNotEmpty())dao.putMedia(batch)
+        if(batch.isNotEmpty())dao.putScannedMedia(batch)
     }
     private suspend fun scanTree(tree:String, stamp:Long) {
         val root=DocumentFile.fromTreeUri(context,Uri.parse(tree)) ?: throw SecurityException()
@@ -88,10 +88,10 @@ class MediaRepository(private val context: Context, private val dao: HarborDao, 
                 val mime=doc.type.orEmpty()
                 if(!mime.startsWith("image/")&&!mime.startsWith("video/"))continue
                 batch+=MediaEntry(doc.uri.toString(),doc.name?:"照片",mime,doc.length(),doc.lastModified(),doc.lastModified(),tree,folder,directory.name?:folder,tree,stamp)
-                if(batch.size>=100){dao.putMedia(batch.toList());batch.clear()}
+                if(batch.size>=100){dao.putScannedMedia(batch.toList());batch.clear()}
             }
         }
-        if(batch.isNotEmpty())dao.putMedia(batch)
+        if(batch.isNotEmpty())dao.putScannedMedia(batch)
     }
     suspend fun importUris(uris:List<Uri>):List<String> = withContext(Dispatchers.IO) {
         val list=uris.distinct().mapNotNull { uri ->
@@ -109,7 +109,7 @@ class MediaRepository(private val context: Context, private val dao: HarborDao, 
                 MediaEntry(uri.toString(),name,context.contentResolver.getType(uri)?:"image/jpeg",size,modified,modified,"manual","手动选择","手动选择","manual",System.currentTimeMillis())
             }.getOrNull()
         }
-        dao.putMedia(list);list.map{it.id}
+        dao.putScannedMedia(list);list.map{it.id}
     }
     fun current(media:MediaEntry):Pair<Long,Long>? = try {
         if(media.source=="media") {

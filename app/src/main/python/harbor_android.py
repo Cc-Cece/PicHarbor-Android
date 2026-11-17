@@ -616,12 +616,14 @@ class MobileService:
                 if action == "connect": return json.dumps({"ok": True, **self.connect(values["credential"], values.get("timeout",60), values.get("proxy", ""))})
                 if action == "media_identity":
                     from gpmc.media_identity import apple_id, has_still_image_time
+                    from gpmc.motion_photo import has_embedded_motion
                     handle = bridge.open(values["uri"], values["name"])
                     try:
                         result = apple_id(str(handle.getPath()), values.get("video", False))
                         keyframe = has_still_image_time(str(handle.getPath())) if values.get("video", False) else False
+                        embedded = has_embedded_motion(str(handle.getPath())) if not values.get("video", False) else False
                     finally: handle.close()
-                    return json.dumps({"ok": True, "identifier": result or "", "still_image_time": keyframe})
+                    return json.dumps({"ok": True, "identifier": result or "", "still_image_time": keyframe, "embedded_motion": embedded})
                 if self.client is None: return json.dumps({"ok": False, "error": "LOGIN_REQUIRED"})
                 if values.get("_account", self.account) != self.account:
                     return json.dumps({"ok": False, "error": "ACCOUNT_CHANGED"})
@@ -634,6 +636,10 @@ class MobileService:
                     result = {}
                 elif action == "reconcile": result = self.reconcile(values,callback)
                 elif action == "albums": result = {"albums": self.albums(callback)}
+                elif action == "sync_album":
+                    self.check(callback)
+                    self.sync_album(values,values['remote_key'])
+                    result = {}
                 elif action == "verify_cleanup": result = self.verify_cleanup(values,bridge,callback)
                 elif action == "account_profile": result = self.account_profile(callback)
                 elif action == "fingerprint":

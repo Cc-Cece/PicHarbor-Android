@@ -19,9 +19,14 @@ try {
     $taskDeviceState=(& $taskAdb -s $Serial get-state 2>$null)
     if($LASTEXITCODE -ne 0 -or ($taskDeviceState -join '').Trim() -ne 'device') {throw 'The selected device is disconnected or unauthorized; no installation attempted.'}
     $taskBuildProcess=Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',('"'+(Join-Path $PSScriptRoot 'build-release.ps1')+'"')) -PassThru -WindowStyle Hidden -RedirectStandardOutput $taskLog -RedirectStandardError ($taskLog+'.stderr')
+    # Retain the process handle before it exits; Windows PowerShell can otherwise
+    # report a null ExitCode for a successfully completed Start-Process child.
+    $taskBuildHandle=$taskBuildProcess.Handle
     # Wait for the build script only; Gradle's reusable daemon must not hold the installation until it exits.
     if(-not $taskBuildProcess.WaitForExit(25*60*1000)){Stop-Process -Id $taskBuildProcess.Id -Force;throw 'Build exceeded 25 minutes; installation skipped.'}
-    if($taskBuildProcess.ExitCode -ne 0){throw 'Build or verification failed; the installed application was preserved.'}
+    $taskBuildProcess.Refresh()
+    $taskBuildExitCode=$taskBuildProcess.ExitCode
+    if($null -eq $taskBuildExitCode -or $taskBuildExitCode -ne 0){throw 'Build or verification failed; the installed application was preserved.'}
     $taskApk=Join-Path $taskRoot 'app\build\outputs\apk\release\app-release.apk'
     if(-not (Test-Path -LiteralPath $taskApk)){throw 'Expected APK is missing.'}
     $env:JAVA_HOME='C:\Program Files\Java\jdk-17'

@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "harbor_android.py",
-      "sha256": "c0bf7c1d3297224205352de9892e7177eb38e99dd6da30e009e908528ac61d86"
+      "sha256": "141ee74446f1e5d56363746e29676451eec7bfb0687aa03e0fe9587c6719cec5"
     },
     {
       "path": "harbor_diagnostics.py",
