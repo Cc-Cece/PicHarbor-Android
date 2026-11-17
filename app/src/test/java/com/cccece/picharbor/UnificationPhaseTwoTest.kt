@@ -19,20 +19,20 @@ class UnificationPhaseTwoTest {
     private fun video(id:String,name:String,captured:Long,folder:String="camera")=
         MediaEntry(id,name,"video/mp4",5000,captured,captured,folder,"Camera")
 
-    @Test fun livePhotoPairsByStemFolderAndCaptureTime() {
-        val p=photo("p1","IMG_001.jpg",1_000_000)
-        val v=video("v1","IMG_001.mp4",1_002_000)
+    @Test fun livePhotoPairsOnlyWithExplicitMatchingMetadata() {
+        val p=photo("p1","IMG_001.jpg",1_000_000).copy(pairingID="pair-1")
+        val v=video("v1","IMG_001.mp4",1_002_000).copy(pairingID="pair-1")
         val all=listOf(p,v,video("v2","IMG_002.mp4",1_002_000),photo("p2","IMG_001.jpg",1_000_000,"other"))
         assertEquals("v1",LivePhotoPairing.findPair(p,all)?.id)
         assertEquals("p1",LivePhotoPairing.findPhotoPartner(v,all)?.id)
         assertNull(LivePhotoPairing.findPair(p,all.filter{it.id!="v1"}))
-        // Too far apart in time: not a pair.
+        // A similar filename without a verified identifier is not a pair.
         assertNull(LivePhotoPairing.findPair(p,listOf(p,video("v9","IMG_001.mp4",1_100_000))))
     }
 
     @Test fun livePhotoGroupDefaultsToOriginalPairing() {
-        val p=photo("p1","IMG_001.jpg",1_000_000)
-        val v=video("v1","IMG_001.mp4",1_001_000)
+        val p=photo("p1","IMG_001.jpg",1_000_000).copy(pairingID="pair-1")
+        val v=video("v1","IMG_001.mp4",1_001_000).copy(pairingID="pair-1")
         val group=LivePhotoPairing.groupFor(p,listOf(p,v),LivePhotoPairing.ORIGINAL)
         assertNotNull(group)
         assertEquals("p1",group!!.pairKey)
@@ -72,7 +72,7 @@ class UnificationPhaseTwoTest {
     }
 
     @Test fun scopeJsonCarriesFoldersVideosAndNoDateFilter() {
-        val scope=ScopePolicy.scopeJson(HarborSettings(folders=setOf("@camera"),trees=setOf("tree://x"),videos=false))
+        val scope=ScopePolicy.scopeJson(HarborSettings(folders=setOf("@camera"),trees=setOf("tree://x"),videos=false,allFolders=false))
         // scope2 modes are only default/all/date/advanced; a folder
         // selection is "advanced" with the folder keys as albums.
         assertEquals(2,scope.getInt("version"))

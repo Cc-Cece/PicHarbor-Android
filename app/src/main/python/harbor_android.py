@@ -306,6 +306,84 @@ class MobileService:
             handle.close()
             diag.emit("resource.closed")
 
+    def process_pair(self, value, bridge, callback):
+        """Keep opaque receipts and a durable commit fence until double-hash confirmation."""
+        from types import SimpleNamespace
+        from gpmc.protocol import Protocol
+        from gpmc.media_identity import apple_id
+        folder = self.home / 'pair-staging'
+        folder.mkdir(parents=True, exist_ok=True)
+        task = value.get('task_id', '')
+        if not re.fullmatch(r'[a-zA-Z0-9-]{1,100}', task):
+            raise ValueError('INVALID_ARGUMENT')
+        protocol = Protocol(SimpleNamespace(api=self.client.api, staging=folder))
+        handles=[]
+        try:
+            resources={}
+            identifiers=[]
+            paths={}
+            for role in ('photo','video'):
+                item=value[role]
+                handle=bridge.open(item['uri'],item['name']);handles.append(handle)
+                path=str(handle.getPath());paths[role]=path
+                identifiers.append(apple_id(path, role=='video'))
+                resources[role]={**self.hashes(path,callback), 'name':item['name']}
+            if not identifiers[0] or identifiers[0]!=identifiers[1]:
+                return {'state':'failed','error':'LIVE_PAIR_METADATA_MISMATCH'}
+            if value.get('strategy') == 'motion':
+                from gpmc.motion_photo import mux_jpeg
+                destination=folder/(task+'.motion.jpg')
+                if not destination.exists():
+                    mux_jpeg(paths['photo'],paths['video'],destination,value.get('keyframe_us'))
+                result=self.process({'uri':destination.as_uri(),'name':Path(value['photo']['name']).stem+'_MP.jpg',
+                    'quality':value.get('quality','original'),'album_mode':'none','modified':value.get('modified',0),'retries':value.get('retries',3)},bridge,callback)
+                if result.get('state') in ('done','exists'):
+                    key=self.client.api.find_remote_media_by_hash(bytes.fromhex(result['sha1']))
+                    if key:
+                        return {'state':'done','remote_key':key,'photo':resources['photo'],'video':resources['video']}
+                return {'state':'waiting_confirmation','error':'PAIR_CONFIRMATION_PENDING'}
+            status=protocol.dispatch('confirm_pair',resources)
+            fence=folder/(task+'.submitted')
+            route='reconcile' if value.get('strategy')=='stepwise' else 'joint'
+            if not status['confirmed'] and not fence.exists():
+                for role in ('photo','video'):
+                    self.check(callback)
+                    resource=resources[role]
+                    receipt=folder/(task+'.'+role+'.receipt')
+                    if not receipt.exists():
+                        token=self.client.api.get_upload_token(base64.b64encode(bytes.fromhex(resource['sha1'])).decode(),resource['size'])
+                        with open(paths[role],'rb') as stream:
+                            raw=self.client.api.upload_file(UploadReader(stream,resource['size'],lambda current:self.emit(callback,'uploading',current,resource['size'])),token,raw_response=True)
+                        temporary=receipt.with_suffix('.part');temporary.write_bytes(raw);temporary.replace(receipt)
+                    resource['response_path']=str(receipt.resolve())
+                    if self.hashes(paths[role],callback)!={key:resource[key] for key in ('sha1','sha256','size')}:
+                        return {'state':'failed','error':'SOURCE_CHANGED'}
+                payload={**resources,'route':route,'quality':value.get('quality','original'),
+                    'created_at':int(value.get('created',0))//1000,'modified_at':int(value.get('modified',0))//1000}
+                if route=='reconcile':
+                    photo_fence=folder/(task+'.photo-submitted')
+                    photo_status=protocol.dispatch('confirm_resource',resources['photo'])
+                    if not photo_status['confirmed']:
+                        if photo_fence.exists():
+                            # A lost response cannot authorize another photo commit.
+                            return {'state':'waiting_confirmation','error':'PAIR_CONFIRMATION_PENDING'}
+                        with photo_fence.open('xb') as output:
+                            output.write(b'submitted');output.flush();os.fsync(output.fileno())
+                        protocol.dispatch('commit_pair_photo',{**resources['photo'],'quality':payload['quality']})
+                # Write before calling commit; an ambiguous response is queried, never blindly re-submitted.
+                with fence.open('xb') as output:
+                    output.write(b'submitted');output.flush();os.fsync(output.fileno())
+                protocol.dispatch('pair_apple',payload)
+                status=protocol.dispatch('confirm_pair',resources)
+            if not status['confirmed']:
+                return {'state':'waiting_confirmation','error':'PAIR_CONFIRMATION_PENDING'}
+            for role in ('photo','video'):
+                resources[role]['remote_key']=status['remote_key']
+                (folder/(task+'.'+role+'.receipt')).unlink(missing_ok=True)
+            return {'state':'done','remote_key':status['remote_key'],'photo':resources['photo'],'video':resources['video']}
+        finally:
+            for handle in handles:handle.close()
+
     def _consume(self, response, snapshot_id=""):
         token, resume, _, deleted = parse_db_update(response)
         root = response.get("1", {})
@@ -518,10 +596,19 @@ class MobileService:
                         self.client = None; self.credential = ""; self.account = ""
                     return json.dumps({"ok": True})
                 if action == "connect": return json.dumps({"ok": True, **self.connect(values["credential"], values.get("timeout",60), values.get("proxy", ""))})
+                if action == "media_identity":
+                    from gpmc.media_identity import apple_id, has_still_image_time
+                    handle = bridge.open(values["uri"], values["name"])
+                    try:
+                        result = apple_id(str(handle.getPath()), values.get("video", False))
+                        keyframe = has_still_image_time(str(handle.getPath())) if values.get("video", False) else False
+                    finally: handle.close()
+                    return json.dumps({"ok": True, "identifier": result or "", "still_image_time": keyframe})
                 if self.client is None: return json.dumps({"ok": False, "error": "LOGIN_REQUIRED"})
                 if values.get("_account", self.account) != self.account:
                     return json.dumps({"ok": False, "error": "ACCOUNT_CHANGED"})
                 if action == "process": result = self.process(values,bridge,callback)
+                elif action == "process_pair": result = self.process_pair(values,bridge,callback)
                 elif action == "lookup": result = self.lookup(values,bridge,callback)
                 elif action == "synchronize":
                     with self.measured("cloud_sync"):

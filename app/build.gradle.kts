@@ -10,11 +10,11 @@ android {
     namespace = "com.cccece.picharbor"
     compileSdk = 36
     defaultConfig {
-        applicationId = "com.cccece.picharbor"
+        applicationId = "com.cccece.picharbor.mobile"
         minSdk = 29
         targetSdk = 36
-        versionCode = 10013
-        versionName = "1.0.9-beta.5"
+        versionCode = 1
+        versionName = "2.0.0-alpha.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -24,6 +24,9 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true; buildConfig = true }
+    packaging { jniLibs { useLegacyPackaging = true; keepDebugSymbols += "**/libharbor_proxy.so" } }
+    sourceSets["main"].jniLibs.srcDir(layout.buildDirectory.dir("generated/proxy/jniLibs"))
+    sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/proxy/assets"))
     sourceSets["main"].java.setSrcDirs(listOf("src/main/java/com"))
     sourceSets["test"].java.setSrcDirs(listOf("src/test/java/com"))
     signingConfigs {
@@ -34,8 +37,9 @@ android {
             keyPassword = System.getenv("PICHARBOR_KEY_PASSWORD")
         }
     }
-    testBuildType = "diagnostic"
+    testBuildType = "debug"
     buildTypes {
+        getByName("debug") { applicationIdSuffix = ".debug" }
         release {
             signingConfig = signingConfigs.getByName("production")
             isMinifyEnabled = true
@@ -64,7 +68,14 @@ val verifyGpmc by tasks.registering(Exec::class) {
     commandLine(providers.gradleProperty("buildPython").getOrElse("python"), "tools/verify_engine.py")
 }
 tasks.named("preBuild") { dependsOn(verifyGpmc) }
+val prepareProxy by tasks.registering(Exec::class) {
+    workingDir(rootProject.projectDir)
+    commandLine(providers.gradleProperty("buildPython").getOrElse("python"), "tools/prepare_proxy.py")
+}
+tasks.named("preBuild") { dependsOn(prepareProxy) }
 dependencies {
+    implementation("org.yaml:snakeyaml:2.2")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation(platform("androidx.compose:compose-bom:2025.08.00"))
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.compose.material3:material3:1.4.0")
@@ -84,6 +95,9 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.8.0")
     implementation("androidx.media3:media3-ui:1.8.0")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
     testImplementation("org.json:json:20250517")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")

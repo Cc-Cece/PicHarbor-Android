@@ -26,6 +26,19 @@ class CredentialStore(context:Context) {
     private val proxyPrefs=context.getSharedPreferences("proxy_v2",Context.MODE_PRIVATE)
     private val proxyAlias="picharbor.proxy.v1"
     val accounts=MutableStateFlow(listOf<SavedAccount>())
+    @Synchronized fun saveProxyLibrary(value:String) {
+        val cipher=Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE,key("picharbor.proxy.library.v1",true))
+        check(proxyPrefs.edit().putString("library_iv",Base64.encodeToString(cipher.iv,Base64.NO_WRAP))
+            .putString("library",Base64.encodeToString(cipher.doFinal(value.toByteArray(Charsets.UTF_8)),Base64.NO_WRAP)).commit())
+    }
+    @Synchronized fun loadProxyLibrary():String? {
+        val data=proxyPrefs.getString("library",null)?:return null
+        val iv=proxyPrefs.getString("library_iv",null)?:throw IllegalStateException("CREDENTIAL_STORAGE")
+        val cipher=Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE,key("picharbor.proxy.library.v1"),GCMParameterSpec(128,Base64.decode(iv,Base64.NO_WRAP)))
+        return cipher.doFinal(Base64.decode(data,Base64.NO_WRAP)).toString(Charsets.UTF_8)
+    }
     init { publish() }
     private fun normal(account:String)=account.trim().lowercase(Locale.ROOT)
     private fun slot(account:String)=MessageDigest.getInstance("SHA-256").digest(normal(account).toByteArray()).joinToString(""){"%02x".format(it)}

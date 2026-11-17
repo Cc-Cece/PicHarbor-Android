@@ -73,7 +73,7 @@ object ProxyPolicy {
      */
     suspend fun validate(core: HarborCore, config: ProxyConfig): Validation {
         validateLocally(config)?.let { return Validation.Invalid(it) }
-        if (!core.available()) return Validation.Valid
+        if (!core.available()) return Validation.Invalid("ENGINE_ERROR")
         val payload = JSONObject()
             .put("enabled", config.enabled)
             .put("scheme", config.scheme)
@@ -83,7 +83,7 @@ object ProxyPolicy {
             .put("verify_tls", true)
         val result = core.validateProxy(payload)
         if (result.optBoolean("ok")) return Validation.Valid
-        if (core.isUnknownOperation(result)) return Validation.Valid
+        if (core.isUnknownOperation(result)) return Validation.Invalid("CORE_ACTION_UNAVAILABLE")
         return Validation.Invalid(result.optString("error", "PROXY_INVALID"))
     }
 

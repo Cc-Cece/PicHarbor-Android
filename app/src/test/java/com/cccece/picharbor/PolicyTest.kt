@@ -14,8 +14,8 @@ class PolicyTest {
         assertFalse(BackupPolicy.matches(media,record.copy(remoteKey="")))
         assertFalse(BackupPolicy.matches(media,null))
     }
-    @Test fun cameraDefaultDoesNotIncludeScreenshotsOrSafLookalikes() {
-        val settings=HarborSettings()
+    @Test fun explicitCameraScopeDoesNotIncludeScreenshotsOrSafLookalikes() {
+        val settings=HarborSettings(allFolders=false)
         assertTrue(settings.includes(media))
         assertFalse(settings.includes(media.copy(folderName="Screenshots")))
         assertFalse(settings.includes(media.copy(source="tree")))
@@ -27,7 +27,8 @@ class PolicyTest {
         assertTrue(settings.includes(media.copy(folderKey="new-folder",folderName="New folder")))
         assertTrue(settings.includes(media.copy(folderKey="authorized-tree",folderName="SD",source="tree")))
         assertTrue(settings.folders.isEmpty())
-        assertFalse(HarborSettings(folders=emptySet()).includes(media))
+        assertTrue(HarborSettings(folders=emptySet()).includes(media))
+        assertFalse(HarborSettings(folders=emptySet(),allFolders=false).includes(media))
     }
     @Test fun allFoldersStillRespectsVideoPreference() {
         val settings=HarborSettings(allFolders=true,videos=false)
@@ -37,7 +38,7 @@ class PolicyTest {
         assertTrue(settings.copy(videos=true).includes(video))
     }
     @Test fun disablingAllFoldersRestoresPreviousChoices() {
-        val original=HarborSettings(folders=setOf("@camera","selected"))
+        val original=HarborSettings(folders=setOf("@camera","selected"),allFolders=false)
         val restored=original.copy(allFolders=true).copy(allFolders=false)
         assertEquals(original,restored)
         assertTrue(restored.includes(media))

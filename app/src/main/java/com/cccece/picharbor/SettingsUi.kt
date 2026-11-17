@@ -24,9 +24,9 @@ import java.time.format.DateTimeFormatter
 fun SettingsScreen(vm:HarborViewModel,data:HarborUiData) {
     val s=data.settings
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        PageTitle("备份设置",vm)
+        PageTitle("备份偏好",vm)
         Column(Modifier.padding(horizontal=20.dp)) {
-            Text("让备份，\n成为一件小事。",style=MaterialTheme.typography.headlineLarge,modifier=Modifier.padding(vertical=18.dp))
+            LText("让备份，\n成为一件小事。",style=MaterialTheme.typography.headlineLarge,modifier=Modifier.padding(vertical=18.dp))
             SettingGroup {
                 ToggleRow("自动备份","备份选定文件夹中的新增内容",s.auto,Icons.Outlined.CloudUpload,!vm.busy){vm.setBoolean("auto",it)}
                 SettingsRow("备份账号",s.account.ifEmpty{"尚未登录"},Icons.Outlined.PersonOutline,onClick={vm.sheet="account"})
@@ -50,8 +50,8 @@ fun SettingsScreen(vm:HarborViewModel,data:HarborUiData) {
         }
     }
 }
-fun qualityName(value:String)=when(value){"unknown"->"待确认";"saver"->"节省空间";"quota"->"原始画质（计入 Google 存储空间）";else->"原始画质"}
-fun livePhotoLabel(value:String)=when(value){"motion"->"Motion Photo（单文件）";else->"原始照片配对（联合提交）"}
+fun qualityName(value:String)=when(value){"unknown"->"待确认";"saver"->"节省空间";"quota"->"计配额原画质";else->"不计配额原画质"}
+fun livePhotoLabel(value:String)=when(value){"motion"->"动态照片封装";"stepwise"->"原始照片配对（分步上传）";else->"原始照片配对"}
 fun albumLabel(s:HarborSettings)=when(s.albumMode){"none"->"不分类";"custom"->"自定义：${s.albumValue}";"existing"->"加入已选择的云端相册";else->"按来源文件夹"}
 
 @Composable
@@ -59,7 +59,7 @@ fun FoldersScreen(vm:HarborViewModel,data:HarborUiData,onPermissions:()->Unit,on
     val folders=remember(data.media){data.media.groupBy{it.folderKey}.entries.sortedWith(compareByDescending<Map.Entry<String,List<MediaEntry>>>{it.value.first().folderName.equals("Camera",true)}.thenBy{it.value.first().folderName})}
     LazyColumn(contentPadding=PaddingValues(bottom=24.dp)) {
         item{PageTitle("备份文件夹",vm)}
-        item{Column(Modifier.padding(horizontal=20.dp)){Text("只备份你想留住的。",style=MaterialTheme.typography.headlineLarge,modifier=Modifier.padding(vertical=16.dp));Helper("开启的文件夹会自动检查新增内容。关闭后，云端已有备份仍会保留。")}}
+        item{Column(Modifier.padding(horizontal=20.dp)){LText("只备份你想留住的。",style=MaterialTheme.typography.headlineLarge,modifier=Modifier.padding(vertical=16.dp));Helper("开启的文件夹会自动检查新增内容。关闭后，云端已有备份仍会保留。")}}
         item{Column(Modifier.padding(horizontal=20.dp)){
             ToggleRow("备份所有文件夹","自动包含新发现的文件夹",data.settings.allFolders,Icons.Outlined.FolderCopy,!vm.busy,vm::setAllFolders)
             Helper("仅包含已授权访问的照片和视频。其他文件夹或 SD 卡仍需先授权。关闭此选项后恢复原来的文件夹选择。")
@@ -73,10 +73,10 @@ fun FoldersScreen(vm:HarborViewModel,data:HarborUiData,onPermissions:()->Unit,on
         val lostTrees=data.settings.trees.filter{tree->folders.none{it.key==tree}}
         items(lostTrees){tree->Box(Modifier.padding(horizontal=20.dp)){SettingsRow("已授权文件夹暂不可用","可能为空、存储卡已拔出或权限失效",Icons.Outlined.SdStorage,onClick={vm.sheet="sd"})}}
         item{Column(Modifier.padding(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
-            OutlinedButton(onClick={vm.sheet="sd"},modifier=Modifier.fillMaxWidth()){Icon(Icons.Outlined.CreateNewFolder,null);Spacer(Modifier.width(8.dp));Text("添加文件夹 / SD 卡")}
-            if(!data.settings.onboarded)Button(onClick=vm::finishSetup,enabled=!vm.busy&&data.settings.account.isNotEmpty(),modifier=Modifier.fillMaxWidth()){Text("开启自动备份")}
-            else FilledTonalButton(onClick={vm.start()},enabled=!vm.busy,modifier=Modifier.fillMaxWidth()){Text(if(data.settings.allFolders)"备份所有文件夹" else "备份已选文件夹")}
-            Helper("默认只选择相机，其他内容由你决定。授权失效时会停止读取，不会自动删除文件。",Icons.Outlined.Security)
+            OutlinedButton(onClick={vm.sheet="sd"},modifier=Modifier.fillMaxWidth()){Icon(Icons.Outlined.CreateNewFolder,null);Spacer(Modifier.width(8.dp));LText("添加文件夹 / SD 卡")}
+            if(!data.settings.onboarded)Button(onClick=vm::finishSetup,enabled=!vm.busy&&data.settings.account.isNotEmpty(),modifier=Modifier.fillMaxWidth()){LText("开启自动备份")}
+            else FilledTonalButton(onClick={vm.start()},enabled=!vm.busy,modifier=Modifier.fillMaxWidth()){LText(if(data.settings.allFolders)"备份所有文件夹" else "备份已选文件夹")}
+            Helper("默认包含全部已授权内容，也可选择相簿。授权失效时会停止读取，不会自动删除文件。",Icons.Outlined.Security)
         }}
     }
 }
@@ -86,7 +86,7 @@ fun NetworkScreen(vm:HarborViewModel,data:HarborUiData) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         PageTitle("网络与移动流量",vm)
         Column(Modifier.padding(20.dp)) {
-            Text("按你的网络习惯备份。",style=MaterialTheme.typography.headlineLarge,modifier=Modifier.padding(bottom=24.dp))
+            LText("按你的网络习惯备份。",style=MaterialTheme.typography.headlineLarge,modifier=Modifier.padding(bottom=24.dp))
             SettingGroup {
                 ToggleRow("仅使用 Wi-Fi","切换到移动网络后等待",data.settings.wifi,Icons.Outlined.Wifi,!vm.busy){vm.setMobile(if(it)"none" else "photos")}
                 SettingsRow("移动流量使用量",when(data.settings.mobile){"photos"->"仅照片，视频等待 Wi-Fi";"all"->"照片和视频";else->"不使用移动流量"},Icons.Outlined.SignalCellularAlt,onClick={vm.sheet="mobile"})
@@ -133,22 +133,22 @@ fun AdvancedScreen(vm:HarborViewModel,data:HarborUiData,onExport:()->Unit) {
 fun HistoryScreen(vm:HarborViewModel,data:HarborUiData) {
     LazyColumn(contentPadding=PaddingValues(bottom=24.dp)) {
         item{PageTitle("任务记录",vm)}
-        item{Text("每一份备份，都有记录。",style=MaterialTheme.typography.headlineLarge,modifier=Modifier.padding(20.dp))}
+        item{LText("每一份备份，都有记录。",style=MaterialTheme.typography.headlineLarge,modifier=Modifier.padding(20.dp))}
         if(data.jobs.isEmpty())item{EmptyState("还没有备份任务","完成一次备份后，可以在这里查看记录。",Icons.Outlined.History)}
         items(data.jobs,key={it.id}) { job ->
             val stats=data.statisticsMap[job.id]
             val completed=stats?.succeeded?:0;val errors=stats?.failed?:0
             Surface(color=MaterialTheme.colorScheme.surfaceContainerLow,shape=MaterialTheme.shapes.large,modifier=Modifier.padding(horizontal=20.dp,vertical=5.dp)){
                 Column(Modifier.fillMaxWidth().padding(18.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-                    Row(verticalAlignment=Alignment.CenterVertically){Icon(if(errors>0)Icons.Outlined.ErrorOutline else Icons.Outlined.CloudDone,null,tint=MaterialTheme.colorScheme.primary);Spacer(Modifier.width(12.dp));Text(if(job.automatic)"自动备份" else "手动备份",style=MaterialTheme.typography.titleMedium,modifier=Modifier.weight(1f));Text(jobLabel(job.state),style=MaterialTheme.typography.labelMedium)}
-                    Text(Instant.ofEpochMilli(job.created).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("M月d日 HH:mm")),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("成功 $completed · 失败 $errors · 共 ${stats?.total?:0} 项",style=MaterialTheme.typography.bodyMedium)
-                    if((stats?.skipped?:0)>0)Text("同名跳过 ${stats?.skipped} 项，内容尚未确认",style=MaterialTheme.typography.bodySmall)
+                    Row(verticalAlignment=Alignment.CenterVertically){Icon(if(errors>0)Icons.Outlined.ErrorOutline else Icons.Outlined.CloudDone,null,tint=MaterialTheme.colorScheme.primary);Spacer(Modifier.width(12.dp));LText(if(job.automatic)"自动备份" else "手动备份",style=MaterialTheme.typography.titleMedium,modifier=Modifier.weight(1f));LText(jobLabel(job.state),style=MaterialTheme.typography.labelMedium)}
+                    LText(Instant.ofEpochMilli(job.created).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("M月d日 HH:mm")),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    LText("成功 $completed · 失败 $errors · 共 ${stats?.total?:0} 项",style=MaterialTheme.typography.bodyMedium)
+                    if((stats?.skipped?:0)>0)LText("同名跳过 ${stats?.skipped} 项，内容尚未确认",style=MaterialTheme.typography.bodySmall)
                     Row {
-                        if(job.state=="paused")TextButton(onClick={vm.resume(job.id)},enabled=!vm.busy){Text("继续")}
-                        if(errors>0)TextButton(onClick={vm.retry(job.id)},enabled=!vm.busy){Text("重试未完成项")}
-                        TextButton(onClick={vm.showJob(job.id)}){Text("查看详情")}
-                        if(job.state in setOf("paused","waiting","needs_attention","auth_required"))TextButton(onClick={vm.sheet="end:${job.id}"}){Text("结束任务")}
+                        if(job.state=="paused")TextButton(onClick={vm.resume(job.id)},enabled=!vm.busy){LText("继续")}
+                        if(errors>0)TextButton(onClick={vm.retry(job.id)},enabled=!vm.busy){LText("重试未完成项")}
+                        TextButton(onClick={vm.showJob(job.id)}){LText("查看详情")}
+                        if(job.state in setOf("paused","waiting","needs_attention","auth_required"))TextButton(onClick={vm.sheet="end:${job.id}"}){LText("结束任务")}
                     }
                 }
             }
@@ -169,11 +169,11 @@ fun FreeSpaceScreen(vm:HarborViewModel,data:HarborUiData) {
         PageTitle("释放手机空间",vm)
         Column(Modifier.padding(horizontal=24.dp),horizontalAlignment=Alignment.CenterHorizontally) {
             EmptyState("给手机，留点新空间。","备份确认后，由 Google 相册官方释放空间处理。",Icons.Outlined.AutoAwesome)
-            Text(formatSize(backed.sumOf{it.size}),style=MaterialTheme.typography.displayMedium,color=MaterialTheme.colorScheme.primary)
-            Text("${backed.size} 个已备份项目",style=MaterialTheme.typography.bodyMedium,modifier=Modifier.padding(vertical=12.dp))
+            LText(formatSize(backed.sumOf{it.size}),style=MaterialTheme.typography.displayMedium,color=MaterialTheme.colorScheme.primary)
+            LText("${backed.size} 个已备份项目",style=MaterialTheme.typography.bodyMedium,modifier=Modifier.padding(vertical=12.dp))
             Helper("只有云端确认已备份的内容，才建议去官方清理。无法确认的项目请保留手机原件。",Icons.Outlined.Security)
             Helper("PicHarbor 不会扫描待删文件，也不会删除手机原件。清理只在 Google 相册官方功能里进行。",Icons.Outlined.Info)
-            Button(onClick=vm::openOfficialFreeSpace,enabled=!vm.busy,modifier=Modifier.fillMaxWidth()){Text("打开 Google 相册释放空间")}
+            Button(onClick=vm::openOfficialFreeSpace,enabled=!vm.busy,modifier=Modifier.fillMaxWidth()){LText("打开 Google 相册释放空间")}
             Helper("将先尝试打开官方释放空间页面（https://photos.google.com/link/freeupspace）；打不开时会依次尝试启动 Google 相册应用、应用商店，或提示手动步骤。",Icons.Outlined.Info)
             Spacer(Modifier.height(20.dp))
         }

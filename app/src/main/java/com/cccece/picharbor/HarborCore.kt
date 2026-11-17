@@ -51,7 +51,18 @@ object HarborCoreState {
  * (the sync target of tools/sync_gpmc.py) with a top-level `harbor_core` fallback.
  * Error text for the UI reuses Messages.error(code) from Engine.kt.
  */
-class HarborCore(private val storePath: String = "") {
+class HarborCore(private val storePath: String = "", private val dao: HarborDao? = null) {
+    private val decisionLock = Mutex()
+    @Volatile var contractReady=false
+        private set
+    suspend fun verifyContract():Boolean {
+        val result=dispatch("capabilities")
+        val actions=result.optJSONArray("actions")?:org.json.JSONArray()
+        val names=(0 until actions.length()).map{actions.getString(it)}.toSet()
+        contractReady=result.optBoolean("ok")&&result.optInt("protocol_version")==2&&
+            setOf("create_task","transition","evaluate_scope","batch_pause","batch_resume","select_proxy").all{it in names}
+        return contractReady
+    }
     @Volatile private var moduleName: String? = null
     private val storeLock = Mutex()
     private val tasks = JSONObject()
@@ -77,21 +88,54 @@ class HarborCore(private val storePath: String = "") {
         .put("module", moduleName ?: JSONObject.NULL)
         .put("error", if (available()) "" else "ENGINE_ERROR")
 
-    suspend fun dispatch(action: String, payload: JSONObject = JSONObject()): JSONObject = withContext(Dispatchers.IO) {
+    suspend fun dispatch(action: String, payload: JSONObject = JSONObject()): JSONObject = decisionLock.withLock {
+        withContext(Dispatchers.IO) {
+        if(action=="create_task" && dao!=null) {
+            dao.coreTask(payload.optString("task_id"))?.let {
+                return@withContext JSONObject().put("ok",true).put("task",JSONObject(it.payload))
+            }
+        }
+        // Compare against the persisted revision before accepting any callback.
+        val source = payload.optJSONObject("task")
+        if (source != null && dao != null) {
+            val saved = dao.coreTask(source.optString("task_id"))
+            if (saved != null && source.optLong("revision") != saved.revision)
+                return@withContext JSONObject().put("ok", false).put("error", "STALE_TASK")
+        }
+        if(dao!=null)payload.optJSONObject("tasks")?.let { batch ->
+            val ids=batch.keys()
+            while(ids.hasNext()) {
+                val id=ids.next();val saved=dao.coreTask(id)
+                if(saved!=null&&saved.revision!=batch.getJSONObject(id).optLong("revision"))
+                    return@withContext JSONObject().put("ok",false).put("error","STALE_TASK")
+            }
+        }
         val module = resolveModule()
             ?: return@withContext JSONObject().put("ok", false).put("error", "ENGINE_ERROR")
         try {
             val raw = Python.getInstance().getModule(module)
                 .callAttr("dispatch_json", action, payload.toString()).toString()
-            JSONObject(raw)
+            val result = JSONObject(raw)
+            if (result.optBoolean("ok") && dao != null) {
+                suspend fun save(task: JSONObject) {
+                    val id = task.getString("task_id")
+                    dao.putCoreTask(CoreTaskSnapshot(id, task.toString(), task.optLong("revision")))
+                }
+                result.optJSONObject("task")?.let { save(it) }
+                result.optJSONArray("results")?.let { rows ->
+                    for (i in 0 until rows.length()) rows.getJSONObject(i).optJSONObject("task")?.let { save(it) }
+                }
+            }
+            result
         } catch (_: Exception) {
             JSONObject().put("ok", false).put("error", "ENGINE_ERROR")
+        }
         }
     }
 
     /** Persists one task dict into the cached store file. Never throws. */
     private suspend fun persist(task: JSONObject) {
-        if (storePath.isEmpty()) return
+        if (dao != null || storePath.isEmpty()) return
         val id = task.optString("task_id")
         if (id.isEmpty()) return
         runCatching {
@@ -108,6 +152,12 @@ class HarborCore(private val storePath: String = "") {
         if (result.optBoolean("ok")) result.optJSONObject("task") else null
 
     suspend fun createTask(taskId: String, asset: JSONObject, idempotencyKey: String): JSONObject {
+        dao?.coreTask(taskId)?.let { saved ->
+            val task = JSONObject(saved.payload)
+            if (task.optString("state") in setOf("interrupted", "failed", "waiting_network"))
+                return transition(task, "queued")
+            return JSONObject().put("ok", true).put("task", task)
+        }
         val result = dispatch("create_task", JSONObject()
             .put("task_id", taskId).put("asset", asset).put("idempotency_key", idempotencyKey))
         updatedTask(result)?.let { persist(it) }
@@ -185,6 +235,11 @@ class HarborCore(private val storePath: String = "") {
 
     /** Loads the persisted store into the cache; returns the core result. */
     suspend fun storeLoad(): JSONObject {
+        if (dao != null) {
+            val stored = JSONObject()
+            dao.coreTasks().forEach { stored.put(it.id, JSONObject(it.payload)) }
+            return JSONObject().put("ok", true).put("tasks", stored)
+        }
         if (storePath.isEmpty()) return JSONObject().put("ok", false).put("error", "ENGINE_ERROR")
         val result = dispatch("store_load", JSONObject().put("path", storePath))
         if (result.optBoolean("ok")) {
@@ -306,8 +361,10 @@ class HarborCore(private val storePath: String = "") {
             HarborCoreState.DONE -> "done"
             HarborCoreState.FAILED -> "failed"
             HarborCoreState.CANCELLED -> "cancelled"
-            HarborCoreState.PAUSED, HarborCoreState.WAITING_NETWORK,
-            HarborCoreState.INTERRUPTED, HarborCoreState.WAITING_CONFIRMATION -> "queued"
+            HarborCoreState.PAUSED -> "paused"
+            HarborCoreState.WAITING_NETWORK -> "waiting_network"
+            HarborCoreState.WAITING_CONFIRMATION -> "waiting_confirmation"
+            HarborCoreState.INTERRUPTED -> "interrupted"
             else -> coreState
         }
 

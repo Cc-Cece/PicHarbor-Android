@@ -39,6 +39,8 @@ class EngineCallback(private val cancelled:()->Boolean={false},private val readG
 class Engine(private val context:Context) {
     private val source=SourceBridge(context)
     suspend fun call(action:String, value:JSONObject=JSONObject(), callback:EngineCallback?=null):JSONObject=withContext(Dispatchers.IO) {
+        val proxy=(context.applicationContext as PicHarborApp).graph.proxy
+        val proxyToken=proxy.outcomeToken()
         if(action !in setOf("connect","logout")&&!value.has("_account"))value.put("_account",Preferences(context).get().account)
         val diagnostic=value.optJSONObject("_diagnostics")?.let{DiagnosticContext.parse(it)}?:DiagnosticContext()
         value.put("_diagnostics",diagnostic.json())
@@ -50,7 +52,13 @@ class Engine(private val context:Context) {
             val result=try {
                 JSONObject(Python.getInstance().getModule("picharbor_engine").callAttr("dispatch",action,value.toString(),source,callback).toString())
             } catch (error:Exception){Diagnostics.event("error.captured",diagnostic,DiagnosticFields.error(error),"ERROR");throw EngineFailure("ENGINE_ERROR")}
-            if(!result.optBoolean("ok"))throw EngineFailure(result.optString("error","ENGINE_ERROR"),result.optJSONObject("_metrics"))
+            if(!result.optBoolean("ok")) {
+                val code=result.optString("error","ENGINE_ERROR")
+                proxy.recordOutcome(code,proxyToken)
+                throw EngineFailure(code,result.optJSONObject("_metrics"))
+            }
+            if(action in setOf("process","process_pair","connect","albums","reconcile","synchronize","account_profile"))
+                proxy.recordOutcome(result.optString("error").takeIf{it.isNotBlank()},proxyToken)
             outcome="success"
             Diagnostics.event("engine.result",diagnostic,JSONObject().put("state",result.optString("state")).put("code",result.optString("error")))
             result

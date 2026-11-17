@@ -23,16 +23,35 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
     val items=settings.map{it.account}.distinctUntilChanged().flatMapLatest{graph.dao.itemsFlow(it)}.stateIn(viewModelScope,SharingStarted.Eagerly,emptyList())
     val statistics=settings.map{it.account}.distinctUntilChanged().flatMapLatest{graph.dao.statisticsFlow(it)}.stateIn(viewModelScope,SharingStarted.Eagerly,emptyList())
     val inspectedJob=MutableStateFlow("")
+    var inspectedItem by mutableStateOf("");private set
+    fun showItem(item:BackupItem){inspectedItem=item.id;inspectedJob.value=item.jobId;navigate("task-detail")}
+    fun itemAction(id:String,operation:String)=action{graph.backup.itemAction(id,operation)}
+    fun archiveItem(id:String,restore:Boolean=false)=action{graph.dao.archiveItem(id,if(restore)0 else System.currentTimeMillis())}
     val jobDetails=inspectedJob.flatMapLatest{graph.dao.jobItemsFlow(it)}.stateIn(viewModelScope,SharingStarted.WhileSubscribed(5000),emptyList())
     var detailLimit by mutableIntStateOf(200)
     fun showJob(id:String){inspectedJob.value=id;detailLimit=200;navigate("job-details")}
+    fun taskProxy(value:String)=action {
+        val job=graph.dao.job(inspectedJob.value)?:return@action
+        if(job.account!=settings.value.account)return@action
+        if(graph.backup.activeJob.value==job.id)graph.backup.stopAndWait()
+        graph.dao.putJob((graph.dao.job(job.id)?:job).copy(proxyPolicy=value))
+        if(job.state!="paused")graph.scheduler.launchManual(job.allowMobile)
+        back()
+    }
     var page by mutableStateOf("photos");private set
+    var scanPurpose by mutableStateOf("");private set
+    var scanResults by mutableStateOf(listOf<String>());private set
+    var scanner:(Boolean)->Unit={}
+    fun scanQr(purpose:String,image:Boolean) { scanPurpose=purpose;scanResults=emptyList();scanner(image) }
+    fun acceptScan(values:List<String>) { scanResults=values.distinct();if(values.isEmpty())say("未识别到二维码，请重试") }
+    fun clearScan(){scanResults=emptyList();scanPurpose=""}
     var navigationForward by mutableStateOf(true);private set
     private val stack=mutableListOf<String>()
     var selected by mutableStateOf(setOf<String>());private set
     var selectionMode by mutableStateOf(false);private set
     var activeMedia by mutableStateOf<MediaEntry?>(null);private set
     var filter by mutableStateOf("all")
+    var libraryAlbum by mutableStateOf("")
     var backupListKind by mutableStateOf("pending");private set
     fun showBackupList(kind:String){backupListKind=kind;navigate("backup-list")}
     var type by mutableStateOf("all")
@@ -46,7 +65,21 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
     var albumChoices by mutableStateOf(listOf<Pair<String,String>>());private set
     var pendingManualIds:List<String>?=null;private set
     val engineReady get()=graph.engineReady
-    init { refresh() }
+    init {
+        refresh()
+        viewModelScope.launch {
+            combine(jobs,settings){rows,s->rows to s}.collect { (rows,s) ->
+                if(s.archiveEnabled) {
+                    val threshold=System.currentTimeMillis()-s.archiveDays*86400000L
+                    rows.filter{it.account==s.account&&it.state in setOf("completed","needs_attention")&&it.completedAt in 1..threshold}
+                        .forEach { job ->
+                            graph.dao.items(job.id).filter{it.state in setOf("done","exists")&&it.archivedAt==0L&&maxOf(job.completedAt,it.unarchivedAt) in 1..threshold}
+                                .forEach{graph.dao.archiveItem(it.id,System.currentTimeMillis())}
+                        }
+                }
+            }
+        }
+    }
     fun navigate(destination:String){navigationForward=true;stack+=page;page=destination;sheet="";selected=emptySet();selectionMode=false}
     fun tab(destination:String){stack.clear();page=destination;sheet="";selected=emptySet();selectionMode=false}
     fun back(){if(sheet.isNotEmpty()){sheet="";return};if(selectionMode){clearSelection();return};navigationForward=false;page=stack.removeLastOrNull()?:"photos"}
@@ -76,7 +109,7 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
         if(!settings.value.onboarded)navigate("folders")
     }
     fun logout()=action {
-        graph.logout();loginRequired=false;sheet="";message="已退出，云端备份会保留";tab("me")
+        graph.logout();loginRequired=false;sheet="";message="已退出，云端备份会保留";tab("settings")
         withContext(Dispatchers.Main){android.webkit.CookieManager.getInstance().removeAllCookies(null);android.webkit.WebStorage.getInstance().deleteAllData()}
     }
     fun switchAccount(onLogin:()->Unit)=action {
@@ -114,8 +147,27 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
         sheet=""
     }
     fun setBoolean(key:String,value:Boolean)=action {
-        graph.preferences.boolean(key,value);graph.scheduler.configure()
+        if (key=="auto" && value && !settings.value.onboarded) { navigate("folders"); return@action }
+        if (key=="wifi") graph.preferences.mobile(if(value) "none" else "all")
+        else graph.preferences.boolean(key,value)
+        if(key=="wifi") { graph.backup.stopAndWait() }
+        graph.scheduler.configure()
     }
+    fun restoreDefaults()=action { graph.backup.stopAndWait(); graph.preferences.restoreBackupDefaults(); graph.scheduler.configure(); message="已恢复备份默认设置，请重新确认范围" }
+    fun pauseBatch(ids:List<String>)=action { graph.backup.pauseJobs(ids) }
+    fun resumeBatch(ids:List<String>)=action { graph.backup.resumeJobs(ids); graph.scheduler.launchManual() }
+    fun removeBatch(ids:List<String>)=action {
+        ids.forEach { id ->
+            graph.dao.items(id).filter{it.state !in setOf("done","exists","cancelled")}.forEach{graph.backup.itemAction(it.id,"remove")}
+            if(graph.dao.items(id).all{it.hidden})graph.dao.hideJob(id)
+        }
+    }
+    fun archiveSelected(ids:List<String>,restore:Boolean)=action{ids.forEach{graph.dao.archiveItem(it,if(restore)0 else System.currentTimeMillis())}}
+    fun archiveBatch(ids:List<String>,restore:Boolean=false)=action {
+        val time=if(restore)0 else System.currentTimeMillis()
+        ids.forEach { id->graph.dao.items(id).forEach{graph.dao.archiveItem(it.id,time)};graph.dao.archiveJob(id,time) }
+    }
+
     fun setAllFolders(value:Boolean)=action {
         graph.preferences.boolean("allFolders",value)
         graph.scheduler.configure()
@@ -191,6 +243,7 @@ class HarborViewModel(app:Application):AndroidViewModel(app) {
     fun pause()=action {graph.backup.pause()}
     fun resume(id:String)=action {graph.backup.resume(id)}
     fun retry(id:String)=action {graph.backup.retry(id)}
+    fun retryAll(ids:List<String>)=action {ids.distinct().forEach { graph.backup.retry(it) }}
     fun end(id:String)=action {graph.backup.end(id)}
     fun albums() {
         sheet="albums"

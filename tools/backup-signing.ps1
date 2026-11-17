@@ -1,6 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$Destination)
 $ErrorActionPreference='Stop'
-$signing=Join-Path $env:LOCALAPPDATA 'PicHarborBuild\signing'
+$signing=Join-Path $env:LOCALAPPDATA 'PicHarborMobileBuild\signing'
 $sourceKey=Join-Path $signing 'picharbor-release.jks'
 $sourcePassword=Join-Path $signing 'password.dpapi'
 if(Test-Path -LiteralPath $Destination){throw 'Destination already exists. Choose a new .p12 file.'}

@@ -1,10 +1,10 @@
 {
-  "version": "1.0.9-beta.5",
+  "version": "2.0.0-alpha.1",
   "note": "Platform adapters are pinned here; gpmc is maintained centrally and pinned by gpmc.lock.json.",
   "files": [
     {
       "path": "harbor_android.py",
-      "sha256": "094e2c5595695dbc80c76fe1ce7e7f5dcf91613c6a23dbedafb25bc629e4a4e9"
+      "sha256": "339790a3add608d62cf1a1b620b7767157adcdc34d96ee973165c58fb56123ad"
     },
     {
       "path": "harbor_diagnostics.py",

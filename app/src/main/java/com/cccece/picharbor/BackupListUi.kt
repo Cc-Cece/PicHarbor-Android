@@ -30,9 +30,9 @@ fun BackupListScreen(vm:HarborViewModel,data:HarborUiData) {
     Column(Modifier.fillMaxSize()) {
         PageTitle(title,vm)
         Row(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically) {
-            Text("共 $count 项",modifier=Modifier.weight(1f),style=MaterialTheme.typography.bodyMedium)
-            if(kind=="pending"&&media.isNotEmpty())TextButton(onClick={vm.start(media.map{it.id})},enabled=!vm.busy){Text("备份这些项目")}
-            if(kind=="attention")TextButton(onClick={vm.navigate("history")}){Text("查看任务记录")}
+            LText("共 $count 项",modifier=Modifier.weight(1f),style=MaterialTheme.typography.bodyMedium)
+            if(kind=="pending"&&media.isNotEmpty())TextButton(onClick={vm.start(media.map{it.id})},enabled=!vm.busy){LText("备份这些项目")}
+            if(kind=="attention")TextButton(onClick={vm.navigate("history")}){LText("查看任务记录")}
         }
         LazyColumn(Modifier.weight(1f),contentPadding=PaddingValues(bottom=24.dp)) {
             if(count==0)item{EmptyState(if(kind=="attention")"暂时没有需要处理的项目" else "这里暂时没有照片",if(kind=="pending")"只显示所选备份文件夹中需要检查的照片和视频。" else "此列表仅针对当前备份账号。")}
@@ -57,8 +57,8 @@ fun MediaStatusRow(name:String,description:String,media:MediaEntry?,onClick:()->
             if(media?.video==true)Icon(Icons.Outlined.PlayCircle,null,Modifier.align(Alignment.BottomEnd).size(24.dp),tint=MaterialTheme.colorScheme.primary)
         }
         Column(Modifier.weight(1f)) {
-            Text(name,style=MaterialTheme.typography.bodyMedium,maxLines=2)
-            Text(description,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            LText(name,style=MaterialTheme.typography.bodyMedium,maxLines=2)
+            LText(description,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Icon(Icons.Outlined.ChevronRight,null)
     }

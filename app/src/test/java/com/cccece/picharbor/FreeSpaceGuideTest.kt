@@ -10,6 +10,8 @@ import org.junit.Test
  * These tests cover the Intent chain only; launch() needs a device and is
  * covered by the chain tests (same intents, same order).
  */
+@org.junit.runner.RunWith(org.robolectric.RobolectricTestRunner::class)
+@org.robolectric.annotation.Config(application=android.app.Application::class,sdk=[35])
 class FreeSpaceGuideTest {
     @Test fun freeUpSpaceLinkIsTheVerifiedUniversalLink() {
         val intent = FreeSpaceGuide.freeUpSpaceLinkIntent()

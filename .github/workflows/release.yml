@@ -57,9 +57,9 @@ jobs:
 
       - name: Configure release signing key
         env:
-          KEYSTORE_BASE64: ${{ secrets.PICHARBOR_KEYSTORE_BASE64 }}
-          STORE_PASSWORD: ${{ secrets.PICHARBOR_STORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.PICHARBOR_KEY_PASSWORD }}
+          KEYSTORE_BASE64: ${{ secrets.PICHARBOR_MOBILE_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.PICHARBOR_MOBILE_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.PICHARBOR_MOBILE_KEY_PASSWORD }}
         run: |
           KEYSTORE_DIR="$RUNNER_TEMP/keystore"
           mkdir -p "$KEYSTORE_DIR"

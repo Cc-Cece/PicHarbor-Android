@@ -59,16 +59,14 @@ object LivePhotoPairing {
      * the media list, so it is unit-testable without a device.
      */
     fun findPair(photo: MediaEntry, all: List<MediaEntry>): MediaEntry? =
-        all.filter { it.video && it.id != photo.id && it.folderKey == photo.folderKey &&
-            stem(it.name) == stem(photo.name) &&
-            kotlin.math.abs(it.captured - photo.captured) <= PAIR_CAPTURE_WINDOW_MS }
+        all.filter { it.video && it.id != photo.id &&
+            photo.pairingID.isNotEmpty() && it.pairingID == photo.pairingID }
             .minByOrNull { kotlin.math.abs(it.captured - photo.captured) }
 
     /** Finds the photo partner of a video (the symmetric lookup). */
     fun findPhotoPartner(video: MediaEntry, all: List<MediaEntry>): MediaEntry? =
-        all.filter { !it.video && it.id != video.id && it.folderKey == video.folderKey &&
-            stem(it.name) == stem(video.name) &&
-            kotlin.math.abs(it.captured - video.captured) <= PAIR_CAPTURE_WINDOW_MS }
+        all.filter { !it.video && it.id != video.id &&
+            video.pairingID.isNotEmpty() && it.pairingID == video.pairingID }
             .minByOrNull { kotlin.math.abs(it.captured - video.captured) }
 
     /**

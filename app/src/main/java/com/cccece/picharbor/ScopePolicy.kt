@@ -74,7 +74,7 @@ object ScopePolicy {
      * unknown-version scope error denies outright.
      */
     suspend fun evaluate(core: HarborCore, settings: HarborSettings, media: MediaEntry): ScopeDecision {
-        if (!core.available()) return ScopeDecision.LocalFallback(localIncludes(settings, media))
+        if (!core.available()) return ScopeDecision.DeniedUnknownScopeVersion("ENGINE_ERROR")
         val scope = scopeJson(settings)
         // "advanced" with no albums selected means nothing is selected:
         // exclude without asking the core (the core would reject the empty
@@ -97,6 +97,6 @@ object ScopePolicy {
         }
         // UNKNOWN_OPERATION (core predates evaluate_scope) or any other core
         // failure: local check preserves the pre-unification behaviour.
-        return ScopeDecision.LocalFallback(localIncludes(settings, media))
+        return ScopeDecision.DeniedUnknownScopeVersion(result.optString("error","ENGINE_ERROR"))
     }
 }

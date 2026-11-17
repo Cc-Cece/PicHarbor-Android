@@ -98,7 +98,7 @@ class LoginActivity : ComponentActivity() {
                 val keyboard=WindowInsets.ime.getBottom(LocalDensity.current)>0
                 BackHandler { if(web.canGoBack())web.goBack() else finish() }
                 Scaffold(modifier=Modifier.imePadding(),topBar={
-                    TopAppBar(title={Text("登录 Google")},navigationIcon={
+                    TopAppBar(title={LText("登录 Google")},navigationIcon={
                         IconButton(onClick={finish()}){Icon(Icons.Outlined.Close,"取消登录")}
                     },actions={Icon(Icons.Outlined.Lock,null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.padding(end=20.dp).size(20.dp))})
                 }) { padding ->
@@ -109,16 +109,16 @@ class LoginActivity : ComponentActivity() {
                                 Icon(Icons.Outlined.CloudDone,null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.padding(12.dp).size(26.dp))
                             }
                             Column(Modifier.weight(1f)) {
-                                Text("连接账号，安心备份",style=MaterialTheme.typography.titleMedium)
-                                Text("在 Google 页面完成登录和验证",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                                LText("连接账号，安心备份",style=MaterialTheme.typography.titleMedium)
+                                LText("在 Google 页面完成登录和验证",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                           }
                         }
                         Surface(color=MaterialTheme.colorScheme.surfaceContainerLow,modifier=Modifier.fillMaxWidth()) {
                             Row(Modifier.padding(horizontal=20.dp,vertical=10.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                                 Icon(Icons.Outlined.Lock,null,modifier=Modifier.size(14.dp),tint=MaterialTheme.colorScheme.primary)
-                                Text("Google 登录 · HTTPS",style=MaterialTheme.typography.labelMedium,modifier=Modifier.weight(1f))
-                                AnimatedContent(loading,label="login-status") { pending -> Text(if(pending)"正在加载" else "请继续登录",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
+                                LText("Google 登录 · HTTPS",style=MaterialTheme.typography.labelMedium,modifier=Modifier.weight(1f))
+                                AnimatedContent(loading,label="login-status") { pending -> LText(if(pending)"正在加载" else "请继续登录",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
                             }
                         }
                         AnimatedVisibility(loading&&pageError.isEmpty()) {
@@ -129,15 +129,15 @@ class LoginActivity : ComponentActivity() {
                             Surface(color=MaterialTheme.colorScheme.errorContainer,modifier=Modifier.fillMaxWidth().animateContentSize()) {
                                 Row(Modifier.padding(start=20.dp,end=12.dp,top=8.dp,bottom=8.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
                                     Icon(Icons.Outlined.Info,null,tint=MaterialTheme.colorScheme.onErrorContainer)
-                                    Text(pageError,modifier=Modifier.weight(1f),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onErrorContainer)
-                                    TextButton(onClick=::retry){Text("重试")}
+                                    LText(pageError,modifier=Modifier.weight(1f),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onErrorContainer)
+                                    TextButton(onClick=::retry){LText("重试")}
                                 }
                             }
                         }
                         // Google's own content keeps its styling; no injected CSS or credential JS bridge.
                         AndroidView(factory={web},modifier=Modifier.fillMaxWidth().weight(1f).background(Color.White))
                         AnimatedVisibility(!keyboard&&!compact) {
-                            Text("登录成功后将自动返回 PicHarbor",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,
+                            LText("登录成功后将自动返回 PicHarbor",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier=Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=12.dp))
                         }
                     }

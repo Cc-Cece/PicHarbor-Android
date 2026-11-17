@@ -35,15 +35,8 @@ class PicHarborApp:Application(), coil.ImageLoaderFactory, androidx.work.Configu
             try {
             runCatching { graph.credentials.migrateLegacy(graph.preferences.get().account) }
             graph.dao.recoverJobs();graph.dao.recoverItems()
+            graph.harborCore.verifyContract()
             runCatching { graph.backup.recoverCoreTasks() }
-            // Legacy migration is prepared (code-ready, reversible) at
-            // startup: it only reads the old stores and writes a separate
-            // migrated copy, never converting or deleting old data.
-            runCatching { LegacyMigrationRunner(graph).prepare() }.onSuccess { report ->
-                Diagnostics.event("legacy.migration_prepared",attrs=org.json.JSONObject()
-                    .put("source_tasks",report.sourceTasks).put("source_records",report.sourceRecords)
-                    .put("migrated_tasks",report.migratedTasks).put("used_core_action",report.usedCoreAction))
-            }
             // Staging contains only app-owned temporary copies, never original media.
             File(cacheDir,"staging").listFiles()?.forEach{it.delete()}
             graph.scheduler.configure()
@@ -71,7 +64,9 @@ class AppGraph(val app:Application,val engineReady:Boolean) {
     val credentials=CredentialStore(app)
     val media=MediaRepository(app,dao,preferences)
     val engine=Engine(app)
-    val harborCore=HarborCore(File(app.filesDir,"runtime/harbor-store.json").absolutePath)
+    val harborCore=HarborCore(dao=dao)
+    val proxy=ProxyManager(this)
+    val computer=LiveLinkTransport(this)
     val backup=BackupRepository(this)
     val scheduler=Scheduler(this)
     fun refreshProfile(account:String,force:Boolean=false)=scope.launch {
@@ -104,20 +99,15 @@ class AppGraph(val app:Application,val engineReady:Boolean) {
      * directly or through a broken proxy.
      */
     suspend fun proxyUrlForEngine():String {
-        val config=ProxyPolicy.buildConfig(preferences.get())?:return ""
-        when(val validation=ProxyPolicy.validate(harborCore,config)) {
-            ProxyPolicy.Validation.Valid -> {}
-            is ProxyPolicy.Validation.Invalid -> throw EngineFailure(validation.error)
-        }
-        return ProxyPolicy.proxyUrl(config,runCatching{credentials.loadProxyCredential()}.getOrNull())
+        return proxy.url()
     }
-    suspend fun ensureAccount():String {
+    suspend fun ensureAccount(proxyPolicy:String=""):String {
         startup.await()
         if(switching.value)throw EngineFailure("ACCOUNT_CHANGED")
-        if(!engineReady)throw EngineFailure("ENGINE_ERROR")
+        if(!engineReady||!harborCore.contractReady)throw EngineFailure("ENGINE_ERROR")
         val expected=preferences.get().account
         val credential=runCatching{credentials.load(expected)}.getOrNull()?:throw EngineFailure("LOGIN_REQUIRED")
-        val result=engine.connect(credential,preferences.get().timeout,proxyUrlForEngine())
+        val result=engine.connect(credential,preferences.get().timeout,proxy.url(proxyPolicy.takeIf{it.isNotBlank()}?.let{org.json.JSONObject(it)}))
         val actual=result.getString("account")
         if(switching.value||expected.isBlank()||actual!=expected||preferences.get().account!=expected)throw EngineFailure("ACCOUNT_CHANGED")
         credentials.needsLogin(expected,false)

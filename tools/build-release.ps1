@@ -1,7 +1,7 @@
-param([switch]$DiagnosticsOnly, [switch]$DeviceTests, [switch]$Verify, [switch]$Lint, [string]$BuildPython = 'C:/Users/Kanbara/AppData/Local/Programs/Python/Python313/python.exe')
+param([switch]$DiagnosticsOnly, [switch]$DeviceTests, [switch]$Verify, [switch]$Lint, [switch]$UpdateDependencyLocks, [string]$BuildPython = 'C:/Users/Kanbara/AppData/Local/Programs/Python/Python313/python.exe')
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$keyDirectory = Join-Path $env:LOCALAPPDATA 'PicHarborBuild\signing'
+$keyDirectory = Join-Path $env:LOCALAPPDATA 'PicHarborMobileBuild\signing'
 $keystoreFile = Join-Path $keyDirectory 'picharbor-release.jks'
 $passwordFile = Join-Path $keyDirectory 'password.dpapi'
 if (-not $env:JAVA_HOME) { $env:JAVA_HOME = 'C:\Program Files\Java\jdk-17' }
@@ -21,13 +21,15 @@ try {
     try {
         $tasks = @()
         if (-not $DiagnosticsOnly) { $tasks += ':app:assembleRelease' }
-        if ($DeviceTests) { $tasks += @(':app:assembleDiagnostic', ':app:assembleDiagnosticAndroidTest') }
+        if ($DeviceTests) { $tasks += @(':app:assembleDebug', ':app:assembleDebugAndroidTest') }
         if ($Verify) { $tasks += ':app:testReleaseUnitTest' }
         if ($Verify -or $Lint) { $tasks += ':app:lintRelease' }
         $previousErrorAction=$ErrorActionPreference
         try {
             $ErrorActionPreference='Continue'
-            & .\gradlew.bat @tasks "-PbuildPython=$BuildPython" --console=plain
+            $buildArguments=@($tasks)
+            if($UpdateDependencyLocks){$buildArguments+='--write-locks'}
+            & .\gradlew.bat @buildArguments "-PbuildPython=$BuildPython" --console=plain
             $gradleResult=$LASTEXITCODE
         } finally { $ErrorActionPreference=$previousErrorAction }
         if ($gradleResult -ne 0) { throw 'Gradle failed. Signing identity has been preserved.' }

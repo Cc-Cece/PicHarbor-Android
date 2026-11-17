@@ -1,5 +1,14 @@
 # 移动端统一任务记录
 
+## 2026-11-17：产品统一与新 Android 应用
+
+当前规范、实现和待验收项见 [MOBILE-PRODUCT-UNIFICATION.md](MOBILE-PRODUCT-UNIFICATION.md)。
+三仓实施分支：`feat/mobile-product-unification`；Android 新身份为 `com.cccece.picharbor.mobile`，旧应用与签名保留。
+每 30 分钟的本机预览安装任务只向用户选定设备 `691a42fe` 安装通过检查的固定签名 APK，不卸载或清理数据。
+构建/安装失败会记录并跳过，日志在 `%LOCALAPPDATA%\PicHarborMobileBuild\device-preview`。
+
+以下记录保持为此前工作历史，不表示全部产品统一已经完成。
+
 总体方向见 [任务书](MOBILE-UNIFICATION-CHARTER.md)。每完成一项，记录范围、实现、验证与遗留事项。
 
 最新交接入口：[2026-11-12 计划、同步与分支总结](PROJECT-STATUS-2026-11-12.md)，包含推荐开发分支和 iOS 最终 CI 的剩余问题。

@@ -27,13 +27,59 @@ data class TransferProgress(val job:String="",val item:String="",val name:String
 data class CleanupEvidenceItem(val taskId:String,val mediaId:String,val cloudConfirmed:Boolean,val confirmedAt:Long)
 
 class BackupRepository(private val graph:AppGraph) {
+    private val suspendedItems=java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val cancelledItems=java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    suspend fun itemAction(id:String,action:String) {
+        val item=graph.dao.item(id)?:return
+        if(item.account!=graph.preferences.get().account)return
+        val job=graph.dao.job(item.jobId)?:return
+        if(item.state in setOf("done","exists","cancelled"))return
+        val tasks=graph.harborCore.storeLoad().optJSONObject("tasks")
+        val task=tasks?.optJSONObject(id)
+        when(action) {
+            "pause"->{suspendedItems.add(id);task?.let{graph.harborCore.transition(it,"paused")};graph.dao.putItem(item.copy(state="paused"))}
+            "resume"->{
+                task?.takeUnless{it.optString("state")=="waiting_confirmation"}?.let{val result=graph.harborCore.transition(it,"queued");if(!result.optBoolean("ok"))throw EngineFailure(result.optString("error","ENGINE_ERROR"))}
+                suspendedItems.remove(id)
+                graph.dao.putItem(item.copy(state=if(item.remoteKey.isBlank())"queued" else "album_pending",error=""))
+                graph.dao.putJob(job.copy(state="queued",manualPriority=true));graph.scheduler.launchManual(job.allowMobile)
+            }
+            "remove"->{
+                cancelledItems.add(id);suspendedItems.add(id)
+                task?.let{graph.harborCore.transition(it,"cancelled")}
+                graph.dao.suppress(SuppressedAsset(item.account,item.mediaId,item.modified))
+                graph.dao.putItem(item.copy(state="cancelled",hidden=true))
+            }
+        }
+    }
+    private val identityCache=java.util.concurrent.ConcurrentHashMap<String,String>()
+    private val keyframeHints=java.util.concurrent.ConcurrentHashMap<String,Boolean>()
+    private val identityMutex=Mutex()
+    suspend fun identifiedMedia():List<MediaEntry> = identityMutex.withLock {
+        val all=graph.dao.media()
+        val currentKeys=all.map{"${it.id}:${it.modified}:${it.size}"}.toSet()
+        identityCache.keys.retainAll(currentKeys);keyframeHints.keys.retainAll(currentKeys)
+        all.map { media ->
+            val supported=media.mime in setOf("image/jpeg","image/heic","image/heif","video/quicktime","video/mp4") ||
+                media.name.substringAfterLast('.').lowercase() in setOf("jpg","jpeg","heic","heif","mov","mp4")
+            if(!supported)media else {
+                val key="${media.id}:${media.modified}:${media.size}"
+                val identifier=identityCache[key]?:run {
+                    val response=graph.engine.call("media_identity",JSONObject().put("uri",media.id).put("name",media.name).put("video",media.video))
+                    val found=response.optString("identifier")
+                    keyframeHints[key]=response.optBoolean("still_image_time")
+                    identityCache[key]=found;found
+                }
+                if(media.pairingID!=identifier)graph.dao.updatePairingID(media.id,media.modified,media.size,identifier)
+                media.copy(pairingID=identifier)
+            }
+        }
+    }
     private val lock=Mutex()
     private val enqueueLock=Mutex()
     private val stopping=AtomicBoolean(false)
     /** Live-photo pair claims: pairKey (photo media id) -> claiming item id. */
-    private val livePhotoClaims=ConcurrentHashMap<String,String>()
     /** Items that must be processed as single resources (live-photo stepwise fallback). */
-    private val stepwiseItems=ConcurrentHashMap.newKeySet<String>()
     /** Latest per-item cleanup evidence, populated by [reconcile]; empty means "no evidence". */
     @Volatile
     var lastCleanupEvidence: List<CleanupEvidenceItem> = emptyList()
@@ -104,7 +150,8 @@ class BackupRepository(private val graph:AppGraph) {
         val settings=graph.preferences.get()
         if(settings.account.isEmpty())throw EngineFailure("LOGIN_REQUIRED")
         val known=graph.dao.backups(settings.account).associateBy{it.mediaId}
-        val explicit=ids?.toSet()
+        val allMedia=identifiedMedia()
+        val explicit=ids?.map { id -> allMedia.firstOrNull{it.id==id}?.takeIf{it.video}?.let{LivePhotoPairing.findPhotoPartner(it,allMedia)?.id}?:id }?.toSet()
         // Scope is decided by the shared core (evaluate_scope) for automatic
         // candidates. Explicit user selection bypasses scope filtering: the
         // user chose those items. The cheap local includes() check below is
@@ -115,12 +162,13 @@ class BackupRepository(private val graph:AppGraph) {
         // unknown-version scope error denies the whole enqueue instead of
         // degrading into "include everything".
         val candidates=ArrayList<MediaEntry>()
-        val allMedia=graph.dao.media()
         for(media in allMedia) {
+            if(media.video && LivePhotoPairing.findPhotoPartner(media,allMedia)!=null)continue
             if(explicit!=null) {
                 if(media.id in explicit)candidates+=media
                 continue
             }
+            if(automatic && graph.dao.suppressed(settings.account,media.id,media.modified)>0)continue
             if(BackupPolicy.matches(media,known[media.id]))continue
             if(!settings.includes(media))continue
             when(val decision=ScopePolicy.evaluate(graph.harborCore,settings,media)) {
@@ -137,7 +185,7 @@ class BackupRepository(private val graph:AppGraph) {
             }
         }
         val job=BackupJob(UUID.randomUUID().toString(),settings.account,System.currentTimeMillis(),automatic,allowMobile=allowMobile,
-            albumMode=settings.albumMode,albumValue=settings.albumValue,quality=settings.quality)
+            albumMode=settings.albumMode,albumValue=settings.albumValue,quality=settings.quality,liveStrategy=settings.livePhotoPairing,editPolicy=settings.editPolicy)
         val selected=ArrayList<String>();var created=0;var reused=0
         graph.database.withTransaction {
             for(media in candidates) {
@@ -240,7 +288,7 @@ class BackupRepository(private val graph:AppGraph) {
                 }
             }
             val mirrored=runCatching{mirrorBatchToCore("batch_resume",itemIds)}.getOrDefault(false)
-            graph.dao.putJob(job.copy(state="queued",automatic=false))
+            graph.dao.putJob(job.copy(state="queued",manualPriority=true))
             results[jobId]=mirrored
         }
         return results
@@ -300,7 +348,7 @@ class BackupRepository(private val graph:AppGraph) {
                 }
             }
         }
-        graph.dao.putJob(job.copy(state="queued",automatic=false));graph.scheduler.launchManual(job.allowMobile)
+        graph.dao.putJob(job.copy(state="queued",manualPriority=true));graph.scheduler.launchManual(job.allowMobile)
     }
     /**
      * Best-effort recovery of shared-core tasks after a process restart.
@@ -317,6 +365,20 @@ class BackupRepository(private val graph:AppGraph) {
         while(keys.hasNext()) {
             val task=tasks.optJSONObject(keys.next())?:continue
             val state=task.optString("state")
+            val item=graph.dao.item(task.optString("task_id"))
+            if(item!=null && graph.dao.job(item.jobId)?.state!="ended") {
+                if(state=="cancelled")graph.dao.putItem(item.copy(state="cancelled"))
+                if(state=="paused")graph.dao.putItem(item.copy(state="paused"))
+                if(state=="done") {
+                    val asset=task.optJSONObject("asset")
+                    val key=task.optString("remote_key").takeUnless{it=="null"}.orEmpty().ifBlank{item.remoteKey}
+                    val media=graph.dao.media(item.mediaId)
+                    if(asset!=null&&key.isNotBlank()&&media!=null)graph.database.withTransaction {
+                        graph.dao.putBackup(BackupRecord(item.account,item.mediaId,asset.getString("sha1"),asset.getString("sha256"),key,asset.getLong("size"),item.modified,"unknown","recovered",System.currentTimeMillis()))
+                        graph.dao.putItem(item.copy(state="done",remoteKey=key))
+                    }
+                }
+            }
             if(state in setOf(HarborCoreState.UPLOADING,HarborCoreState.SUBMITTING,HarborCoreState.CONFIRMING)) {
                 runCatching{graph.harborCore.transition(task,HarborCoreState.INTERRUPTED)}
             }
@@ -336,6 +398,9 @@ class BackupRepository(private val graph:AppGraph) {
                 }
             }
         }
+        graph.dao.items(jobId).filter { it.state !in setOf("done","exists") }.forEach {
+            graph.dao.suppress(SuppressedAsset(it.account,it.mediaId,it.modified))
+        }
         graph.dao.jobState(jobId,"ended")
         graph.dao.items(jobId).filter{it.state !in BackupPolicy.terminalItems}.forEach{graph.dao.putItem(it.copy(state="cancelled"))}
     }
@@ -351,6 +416,7 @@ class BackupRepository(private val graph:AppGraph) {
                 val settings=graph.preferences.get()
                 val charging=graph.app.getSystemService(android.os.BatteryManager::class.java).isCharging
                 val job=graph.dao.nextJob(account,settings.auto&&(!settings.charging||charging))?:break
+                graph.ensureAccount(job.proxyPolicy)
                 if(job.account!=settings.account)break
                 if(settings.wifi&&!job.allowMobile&&!onWifi()) {
                     graph.dao.jobState(job.id,"waiting");notice.value="等待 Wi-Fi 连接";return false
@@ -358,7 +424,7 @@ class BackupRepository(private val graph:AppGraph) {
                 activeJob.value=job.id;graph.dao.jobState(job.id,"running")
                 val jobDiagnostic=DiagnosticContext(job=job.id)
                 Diagnostics.event("job.state_changed",jobDiagnostic,JSONObject().put("state","running").put("concurrency",settings.concurrency).put("setting_timeout_ms",settings.timeout*1000).put("retry_limit",settings.retries))
-                val items=graph.dao.items(job.id).filter{it.state in setOf("queued","album_pending","hashing","checking","uploading","finalizing","finalizing_album")}
+                val items=graph.dao.items(job.id).filter{it.state in setOf("queued","album_pending","waiting_confirmation","hashing","checking","uploading","finalizing","finalizing_album")}
                 val semaphore=Semaphore(settings.concurrency)
                 val authenticationFailure=AtomicBoolean(false)
                 val preempted=AtomicBoolean(false)
@@ -379,14 +445,35 @@ class BackupRepository(private val graph:AppGraph) {
                         if(job.automatic&&graph.dao.pendingManual(account)>0){preempted.set(true);return@withPermit}
                         val media=graph.dao.media(item.mediaId)
                         if(!onWifi()&&!job.allowMobile&&settings.mobile=="photos"&&media?.video==true)return@withPermit
-                        process(job,item,settings,{graph.switching.value||stopping.get()||externalCancelled()||authenticationFailure.get()||(settings.wifi&&!job.allowMobile&&!onWifi())})
+                        process(job,item,settings,{item.id in suspendedItems||graph.switching.value||stopping.get()||externalCancelled()||authenticationFailure.get()||(settings.wifi&&!job.allowMobile&&!onWifi())})
+                        if(item.id in suspendedItems)graph.dao.item(item.id)?.let{current->
+                            graph.dao.putItem(current.copy(state=if(item.id in cancelledItems)"cancelled" else "paused",hidden=current.hidden||item.id in cancelledItems))
+                        }
                         if(graph.dao.item(item.id)?.error in setOf("LOGIN_REQUIRED","DEVICE_VERIFICATION","ENCRYPTED_TOKEN"))authenticationFailure.set(true)
                         val done=completed.incrementAndGet();notify("正在备份 · $done / $total",if(total>0)done*100/total else 0)
                     } } finally {
                         Diagnostics.event(if(acquired)"permit.released" else "wait.finished",waiting,JSONObject().put("kind","permit").put("outcome",if(acquired)"released" else "cancelled"))
                     } } }.awaitAll()
                 }
-                val updated=graph.dao.items(job.id)
+                var updated=graph.dao.items(job.id)
+                val networkRetries=updated.filter {
+                    it.state=="failed" && it.error in setOf("NETWORK_ERROR","RATE_LIMITED","STAGE_TIMEOUT","NO_PROGRESS_TIMEOUT") &&
+                        it.attempt in 1..settings.retries
+                }
+                if(networkRetries.isNotEmpty()&&!stopping.get()&&!externalCancelled()&&!authenticationFailure.get()) {
+                    // Reconnect only after all concurrent transfers have finished.
+                    // The next wave can then choose another healthy proxy safely.
+                    val delayMs=graph.harborCore.retryDelayMs(networkRetries.maxOf{it.attempt}-1)
+                    notice.value="网络暂时不可用，稍后重试"
+                    var remaining=delayMs
+                    while(remaining>0&&!stopping.get()&&!externalCancelled()&&!graph.switching.value) {
+                        val interval=minOf(remaining,250L);delay(interval);remaining-=interval
+                    }
+                    if(!stopping.get()&&!externalCancelled()&&!graph.switching.value) {
+                        networkRetries.forEach{graph.dao.queueNetworkRetry(it.id,it.attempt)}
+                        updated=graph.dao.items(job.id)
+                    }
+                }
                 val paused=stopping.get()||externalCancelled()
                 val state=when {
                     stopping.get()->"paused"
@@ -394,7 +481,9 @@ class BackupRepository(private val graph:AppGraph) {
                     authenticationFailure.get()->"auth_required"
                     preempted.get()->"queued"
                     updated.any{it.state in setOf("failed","album_pending")}->"needs_attention"
-                    updated.any{it.state=="queued"}->"waiting"
+                    updated.any{it.state in setOf("queued","waiting_confirmation")}->"waiting"
+                    updated.any{it.state=="paused"}->"paused"
+                    updated.all{it.state=="cancelled"}->"ended"
                     else->"completed"
                 }
                 Diagnostics.event("job.state_changed",jobDiagnostic,JSONObject().put("state",state))
@@ -437,56 +526,34 @@ class BackupRepository(private val graph:AppGraph) {
         }
         // The run loop snapshots items up front; a Live Photo partner may
         // already have been finished by its pair's joint task. Re-read.
-        if(graph.dao.item(item.id)?.state !in setOf("queued","album_pending","hashing","checking","uploading","finalizing","finalizing_album"))return
-        val pairing=settings.livePhotoPairing
-        if(!stepwiseItems.contains(item.id)) {
-            val group=try {
-                val all=graph.dao.media()
-                // Only Motion Photo pairing scans a JPEG for embedded video;
-                // under "original" pairing a Motion Photo file without a
-                // separate video partner is an ordinary photo (its embedded
-                // video rides along in the file bytes).
-                val embedded=pairing==LivePhotoPairing.MOTION&&!media.video&&media.mime=="image/jpeg"&&
-                    LivePhotoPairing.hasEmbeddedMotion(graph.app.contentResolver,media.id)
-                LivePhotoPairing.groupFor(media,all,pairing,embedded)
-            } catch (_:Exception) { null }
-            if(group!=null) {
-                // If the partner is mid-flight on this pair, wait briefly
-                // for it to finish (it updates this item); only give up
-                // and return when it is still holding the claim.
-                var waits=0
-                while(livePhotoClaims[group.pairKey]?.let{it!=item.id}==true&&waits<50) { delay(200);waits++ }
-                if(graph.dao.item(item.id)?.state !in setOf("queued","album_pending","hashing","checking","uploading","finalizing","finalizing_album"))return
-                if(!stepwiseItems.contains(item.id)) {
-                    val claimer=livePhotoClaims.putIfAbsent(group.pairKey,item.id)
-                    if(claimer!=null&&claimer!=item.id) {
-                        // The partner item is already processing this pair; it
-                        // updates this item's state when the joint task finishes.
-                        return
-                    }
-                    try {
-                        if(processLivePhotoWithCore(job,item,media,group,settings,cancelled))return
-                    } finally {
-                        livePhotoClaims.remove(group.pairKey,item.id)
-                    }
-                    // The core declined the joint live-photo task (e.g. it does
-                    // not know live_photo yet): fall back to stepwise, one core
-                    // task per resource. Remember both sides so neither side
-                    // re-enters the joint flow on its own turn.
-                    stepwiseItems+=item.id
-                    try {
-                        graph.dao.items(job.id).firstOrNull{it.mediaId==group.video?.id}?.let{stepwiseItems+=it.id}
-                        graph.dao.items(job.id).firstOrNull{it.mediaId==group.photo.id}?.let{stepwiseItems+=it.id}
-                    } catch (_:Exception) { }
-                }
-            }
+        if(graph.dao.item(item.id)?.state !in setOf("queued","album_pending","waiting_confirmation","hashing","checking","uploading","finalizing","finalizing_album"))return
+        val all=identifiedMedia()
+        val identified=all.firstOrNull{it.id==media.id}?:media
+        val group=LivePhotoPairing.groupFor(identified,all,job.liveStrategy)
+        if(group?.video!=null) {
+            processLivePhotoWithCore(job,item,media,group,settings,cancelled)
+            return
         }
         if(!processSingleWithCore(job,item,media,settings,cancelled)) {
+            val current=graph.dao.item(item.id)
+            if(current!=null&&graph.dao.job(job.id)?.state!="ended"&&current.state !in setOf("done","exists","cancelled","paused"))
+                graph.dao.putItem(current.copy(state="queued",error="ENGINE_ERROR"))
             notice.value="共享核心暂不可用，稍后会自动重试"
         }
     }
     /** One local file's digests plus its cloud lookup key, for one resource. */
     private data class ResourceReady(val media:MediaEntry,val sha1:String,val sha256:String,val size:Long,val remoteKey:String,val durationSeconds:Long?)
+    private fun keyframeUs(media:MediaEntry):Long?=runCatching {
+        if(keyframeHints["${media.id}:${media.modified}:${media.size}"]!=true)return@runCatching null
+        val extractor=android.media.MediaExtractor()
+        try {
+            extractor.setDataSource(graph.app,android.net.Uri.parse(media.id),null)
+            val tracks=(0 until extractor.trackCount).filter{extractor.getTrackFormat(it).getString(android.media.MediaFormat.KEY_MIME)?.startsWith("application/")==true}
+            if(tracks.size!=1)return@runCatching null
+            extractor.selectTrack(tracks.single())
+            extractor.sampleTime.takeIf{it>=0}
+        } finally {extractor.release()}
+    }.getOrNull()
 
     /** Video duration in whole seconds, or null when it cannot be read. Never throws. */
     private fun videoDurationSeconds(media:MediaEntry):Long? {
@@ -535,128 +602,51 @@ class BackupRepository(private val graph:AppGraph) {
      * failure handling).
      */
     private suspend fun processLivePhotoWithCore(job:BackupJob,item:BackupItem,media:MediaEntry,group:LivePhotoPairing.LivePhotoGroup,settings:HarborSettings,cancelled:()->Boolean):Boolean {
-        val diagnostic=DiagnosticContext(job=job.id,item=item.id,attempt=UUID.randomUUID().toString())
-        var coreTask:JSONObject?=null
-        fun advance(result:JSONObject):JSONObject? {
-            val updated=graph.harborCore.updatedTask(result)
-            if(updated!=null)coreTask=updated
-            return updated
+        val video=group.video?:return false
+        var task:JSONObject?=null
+        suspend fun move(state:String,confirmed:Boolean?=null,remoteKey:String?=null) {
+            val result=graph.harborCore.transition(task!!,state,cloudConfirmed=confirmed,remoteKey=remoteKey)
+            task=graph.harborCore.updatedTask(result)?:throw EngineFailure(result.optString("error","ENGINE_ERROR"))
         }
-        suspend fun itemFor(entry:MediaEntry):BackupItem? =
-            if(entry.id==item.mediaId)item else graph.dao.items(job.id).firstOrNull{it.mediaId==entry.id}
         try {
-            val partnerMedia=group.video
-            val photoItem=itemFor(group.photo)
-            val videoItem=partnerMedia?.let{itemFor(it)}
-            // Both resources need an item in this job, or an existing backup
-            // record (then the resource is a lookup away from a dedup hit).
-            // Otherwise the pair spans jobs: decline joint, go stepwise.
-            if(photoItem==null&&!BackupPolicy.matches(group.photo,graph.dao.backup(job.account,group.photo.id)))return false
-            if(partnerMedia!=null&&videoItem==null&&!BackupPolicy.matches(partnerMedia,graph.dao.backup(job.account,partnerMedia.id)))return false
-            graph.dao.putItem(item.copy(state="hashing"))
-            val photoRes=prepareResource(job,group.photo,diagnostic)
-            val videoRes=partnerMedia?.let{prepareResource(job,it,diagnostic)}
-            val resourceList=listOfNotNull(photoRes to "photo",videoRes?.let{it to "video"})
-            val resources=org.json.JSONArray()
-            for((res,role) in resourceList) {
-                // Core resource shape: {role: photo|video, sha1?, sha256?,
-                // size_bytes?, filename?} — "role", not "kind".
-                val entry=JSONObject().put("role",role).put("filename",res.media.name)
-                    .put("sha1",res.sha1).put("sha256",res.sha256).put("size_bytes",res.size)
-                resources.put(entry)
-            }
-            // ONE per-resource core decision: decide_prepare with the full
-            // asset (resources) and remote_keys keyed by role. A single
-            // remote_key must not be sent together with resources (the core
-            // rejects it as INVALID_ARGUMENT). The answer carries
-            // resources[{role, exists, remote_key?}] and top-level exists
-            // only when every resource already exists.
-            val asset=JSONObject().put("local_id",group.photo.id).put("filename",group.photo.name)
-                .put("sha1",photoRes.sha1).put("sha256",photoRes.sha256).put("size",photoRes.size)
-                .put("media_kind",if(partnerMedia!=null)"live_photo" else "motion_photo")
-                .put("resources",resources)
-            if(group.embeddedMotion)asset.put("embedded_motion",true)
-            val remoteKeys=JSONObject()
-            if(photoRes.remoteKey.isNotEmpty())remoteKeys.put("photo",photoRes.remoteKey)
-            if(videoRes!=null&&videoRes.remoteKey.isNotEmpty())remoteKeys.put("video",videoRes.remoteKey)
-            val decision=graph.harborCore.decidePrepare(asset,remoteKeys)
-            if(!decision.optBoolean("ok"))return false
-            val dedupHit=mutableMapOf<String,Boolean>()
-            val hitKeys=mutableMapOf<String,String>()
-            val decisions=decision.optJSONArray("resources")
-            if(decisions!=null) {
-                for(i in 0 until decisions.length()) {
-                    val entry=decisions.optJSONObject(i)?:continue
-                    val role=entry.optString("role")
-                    val mediaId=if(role=="video")videoRes?.media?.id else photoRes.media.id
-                    if(mediaId!=null) {
-                        dedupHit[mediaId]=entry.optBoolean("exists")
-                        if(entry.optBoolean("exists"))hitKeys[mediaId]=entry.optString("remote_key")
-                    }
-                }
-            } else {
-                // No per-resource breakdown (older core): top-level only.
-                val allHit=HarborCore.isDedupHit(decision)
-                dedupHit[photoRes.media.id]=allHit
-                if(videoRes!=null)dedupHit[videoRes.media.id]=allHit
-                if(allHit) {
-                    hitKeys[photoRes.media.id]=decision.optString("remote_key")
-                    if(videoRes!=null)hitKeys[videoRes.media.id]=decision.optString("remote_key")
-                }
-            }
-            val created=graph.harborCore.createTask(item.id,asset,"android:live:${group.photo.id}:${group.photo.modified}")
-            if(advance(created)==null)return false
-            if(advance(graph.harborCore.transition(coreTask!!,HarborCoreState.PREPARING))==null)return false
-            advance(graph.harborCore.transition(coreTask!!,HarborCoreState.UPLOADING))
-            val transported=mutableMapOf<String,BackupItem>()
-            for((res,_) in resourceList) {
-                val resItem=(if(res.media.id==group.photo.id)photoItem else videoItem)?.copy(sha1=res.sha1,sha256=res.sha256)
-                if(dedupHit[res.media.id]==true) {
-                    val key=hitKeys[res.media.id]?:res.remoteKey
-                    val record=BackupRecord(job.account,res.media.id,res.sha1,res.sha256,key,res.size,res.media.modified,"unknown","content_exists",System.currentTimeMillis())
-                    graph.dao.putBackup(record)
-                    if(resItem!=null) {
-                        graph.dao.putItem(resItem.copy(state="exists",remoteKey=key,origin="content_exists",attempt=resItem.attempt+1))
-                        transported[res.media.id]=resItem.copy(state="exists",remoteKey=key,origin="content_exists")
-                    } else {
-                        transported[res.media.id]=BackupItem("","",job.account,res.media.id,res.media.name,res.size,"exists",key,res.sha1,res.sha256)
-                    }
-                } else {
-                    // A resource without an item in this job cannot be
-                    // transported as part of the joint task: decline joint.
-                    if(resItem==null)return false
-                    transportItem(job,resItem,settings,cancelled,lookupRemoteKey=res.remoteKey,lookupFresh=true)
-                    val final=graph.dao.item(resItem.id)
-                    if(final?.state !in setOf("done","exists","album_pending")) {
-                        advance(graph.harborCore.transition(coreTask!!,HarborCoreState.FAILED,errorCode=final?.error?.ifBlank{null}))
-                        return true
-                    }
-                    transported[res.media.id]=final!!
-                }
-            }
-            // Single joint confirmation for the pair.
-            advance(graph.harborCore.transition(coreTask!!,HarborCoreState.SUBMITTING))
-            advance(graph.harborCore.transition(coreTask!!,HarborCoreState.CONFIRMING))
-            advance(graph.harborCore.transition(coreTask!!,HarborCoreState.DONE,cloudConfirmed=true))
-            // Mirror the joint outcome onto the other side's item so it is
-            // not processed again on its own turn.
-            for((mediaId,done) in transported) {
-                if(mediaId==item.mediaId)continue
-                val other=graph.dao.items(job.id).firstOrNull{it.mediaId==mediaId}?:continue
-                graph.dao.putItem(other.copy(state=if(done.state=="exists")"exists" else "done",remoteKey=done.remoteKey,sha1=done.sha1,sha256=done.sha256,origin=done.origin,attempt=other.attempt+1))
-            }
-            Diagnostics.event("item.state_changed",diagnostic,JSONObject().put("state","done").put("code",""))
-            runCatching{graph.harborCore.logEvent("item.state_changed",item.id,JSONObject().put("state","done").put("filename",media.name))}
-            return true
-        } catch(error:Exception) {
-            coreTask?.let{task->runCatching{graph.harborCore.transition(task,HarborCoreState.INTERRUPTED)}}
-            if(error is EngineFailure&&error.code in setOf("FILE_ACCESS","SOURCE_CHANGED")) {
-                graph.dao.putItem(item.copy(state="failed",error=error.code,attempt=item.attempt+1))
+            val photo=prepareResource(job,group.photo,DiagnosticContext(job=job.id,item=item.id))
+            val movie=prepareResource(job,video,DiagnosticContext(job=job.id,item=item.id))
+            val resources=org.json.JSONArray().put(JSONObject().put("role","photo").put("sha1",photo.sha1).put("sha256",photo.sha256).put("size_bytes",photo.size))
+                .put(JSONObject().put("role","video").put("sha1",movie.sha1).put("sha256",movie.sha256).put("size_bytes",movie.size))
+            val asset=JSONObject().put("local_id",group.photo.id).put("filename",group.photo.name).put("sha1",photo.sha1).put("sha256",photo.sha256).put("size",photo.size).put("media_kind","live_photo").put("resources",resources)
+            task=graph.harborCore.updatedTask(graph.harborCore.createTask(item.id,asset,"android:${group.photo.id}:${group.photo.modified}"))?:throw EngineFailure("ENGINE_ERROR")
+            if(task!!.optString("state")=="waiting_confirmation")move("confirming")
+            else {move("preparing");move("uploading");move("submitting");move("confirming")}
+            fun resource(value:MediaEntry)=JSONObject().put("uri",value.id).put("name",value.name)
+            val request=JSONObject().put("_account",job.account).put("task_id",item.id).put("photo",resource(group.photo)).put("video",resource(video))
+                .put("quality",job.quality).put("strategy",job.liveStrategy).put("created",group.photo.captured).put("modified",group.photo.modified)
+            if(job.liveStrategy=="motion")keyframeUs(video)?.let{request.put("keyframe_us",it)}
+            graph.dao.putItem(item.copy(state="uploading"))
+            val result=graph.engine.call("process_pair",request,EngineCallback(cancelled){event->
+                progress.value=TransferProgress(job.id,item.id,media.name,event.optString("phase"),event.optLong("completed"),event.optLong("total"))
+            })
+            if(cancelled()||graph.dao.job(job.id)?.state=="ended")throw EngineFailure("JOB_PAUSED")
+            if(result.optString("state")=="waiting_confirmation") {
+                move("waiting_confirmation")
+                graph.dao.putItem(item.copy(state="waiting_confirmation",error="PAIR_CONFIRMATION_PENDING"))
                 return true
             }
-            return false
-        } finally {
-            inFlight.update{it-item.id}
+            if(result.optString("state")!="done")throw EngineFailure(result.optString("error","PAIR_CONFIRMATION_PENDING"))
+            val key=result.getString("remote_key")
+            move("done",true,key)
+            graph.database.withTransaction {
+                for((entry,role) in listOf(group.photo to "photo",video to "video")) {
+                    val value=result.getJSONObject(role)
+                    graph.dao.putBackup(BackupRecord(job.account,entry.id,value.getString("sha1"),value.getString("sha256"),key,value.getLong("size"),entry.modified,job.quality,"paired",System.currentTimeMillis()))
+                }
+                graph.dao.putItem(item.copy(state="done",remoteKey=key,sha1=photo.sha1,sha256=photo.sha256,origin="paired",attempt=item.attempt+1))
+            }
+            return true
+        } catch(error:Exception) {
+            if(graph.dao.job(job.id)?.state=="ended")return true
+            task?.let{runCatching{graph.harborCore.transition(it,if(cancelled())"paused" else "failed",errorCode=(error as? EngineFailure)?.code?:"ENGINE_ERROR")}}
+            graph.dao.putItem(item.copy(state=if(cancelled())"queued" else "failed",error=(error as? EngineFailure)?.code?:"ENGINE_ERROR",attempt=item.attempt+1))
+            return true
         }
     }
     /**
@@ -681,7 +671,8 @@ class BackupRepository(private val graph:AppGraph) {
         var coreTask:JSONObject?=null
         fun advance(result:JSONObject):JSONObject? {
             val updated=graph.harborCore.updatedTask(result)
-            if(updated!=null)coreTask=updated
+            if(updated==null)throw EngineFailure(result.optString("error","ENGINE_ERROR"))
+            coreTask=updated
             return updated
         }
         val mediaKind=if(media.video)"video" else "photo"
@@ -717,7 +708,7 @@ class BackupRepository(private val graph:AppGraph) {
                 val hitKey=prepared.optString("remote_key")
                 if(hitKey.isNotEmpty()) {
                     advance(graph.harborCore.transition(coreTask!!,HarborCoreState.DEDUP_HIT,remoteKey=hitKey))
-                    advance(graph.harborCore.transition(coreTask!!,HarborCoreState.DONE,cloudConfirmed=true))
+                    advance(graph.harborCore.transition(coreTask!!,HarborCoreState.DONE,remoteKey=hitKey,cloudConfirmed=true))
                     val record=BackupRecord(job.account,media.id,ready.sha1,ready.sha256,hitKey,ready.size,media.modified,"unknown","content_exists",System.currentTimeMillis())
                     graph.dao.putBackup(record)
                     graph.dao.putItem(latest.copy(state="exists",remoteKey=hitKey,sha1=ready.sha1,sha256=ready.sha256,origin="content_exists",attempt=item.attempt+1))
@@ -741,7 +732,7 @@ class BackupRepository(private val graph:AppGraph) {
                     // the independent check against the cloud library.
                     advance(graph.harborCore.transition(coreTask!!,HarborCoreState.SUBMITTING))
                     advance(graph.harborCore.transition(coreTask!!,HarborCoreState.CONFIRMING))
-                    advance(graph.harborCore.transition(coreTask!!,HarborCoreState.DONE,cloudConfirmed=true))
+                    advance(graph.harborCore.transition(coreTask!!,HarborCoreState.DONE,remoteKey=final.remoteKey,cloudConfirmed=true))
                     runCatching{graph.harborCore.logEvent("item.state_changed",item.id,JSONObject().put("state","done").put("filename",media.name))}
                 }
                 "album_pending"->{
@@ -832,6 +823,8 @@ class BackupRepository(private val graph:AppGraph) {
         }
     }
     private suspend fun uploaded(job:BackupJob,media:MediaEntry,item:BackupItem,data:JSONObject):BackupItem {
+        if(graph.dao.job(job.id)?.state=="ended" || graph.preferences.get().account!=job.account)
+            throw EngineFailure("JOB_CANCELLED")
         val key=data.optString("remote_key")
         if(key.isEmpty())return item
         val origin=data.optString("origin")

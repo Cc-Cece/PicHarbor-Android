@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
@@ -13,7 +15,7 @@
     <uses-permission android:name="android.permission.RUN_USER_INITIATED_JOBS" />
     <application android:name=".PicHarborApp" android:label="PicHarbor" android:icon="@drawable/ic_harbor"
         android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/data_extraction_rules"
-        android:usesCleartextTraffic="false" android:supportsRtl="true" android:theme="@style/Theme.PicHarbor">
+        android:networkSecurityConfig="@xml/network_security_config" android:extractNativeLibs="true" android:usesCleartextTraffic="false" android:supportsRtl="true" android:theme="@style/Theme.PicHarbor">
         <activity android:name=".LoginActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>

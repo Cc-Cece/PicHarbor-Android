@@ -16,15 +16,17 @@ data class HarborSettings(
     val time: String = "02:00", val restart: Boolean = true, val quality: String = "original",
     val concurrency: Int = 2, val timeout: Int = 60, val retries: Int = 3, val sameName: Boolean = false,
     val folders: Set<String> = setOf("@camera"), val trees: Set<String> = emptySet(),
-    val theme: String = "system", val palette: String = "system", val albumMode: String = "folder",
+    val theme: String = "system", val palette: String = "system", val albumMode: String = "none",
     val albumValue: String = "", val mobile: String = "none", val account: String = "",val bootSession:Int=-1,
-    val allFolders:Boolean=false,
+    val allFolders:Boolean=true,
     /** Live Photo pairing: "original" (photo+video, joint submit) is the
      * default; "motion" is the older single-file Motion Photo default. An
      * upgrade never overwrites an existing choice (a missing key just reads
      * as "original"); the per-account profile only restores a value saved
      * for that account. */
     val livePhotoPairing:String="original",
+    val editPolicy:String="both", val strictConfirmation:Boolean=false,
+    val archiveEnabled:Boolean=true, val archiveDays:Int=14, val language:String="system",
     /** Explicit proxy, off by default and device-level (not per account, so
      * it is deliberately NOT part of the per-account profile maps below).
      * The password is NOT stored here; see CredentialStore proxy methods. */
@@ -46,11 +48,16 @@ class Preferences(private val context: Context) {
         timeout=(p[intPreferencesKey("timeout")]?:60).coerceIn(30,120), retries=(p[intPreferencesKey("retries")]?:3).coerceIn(0,3),
         sameName=p[booleanPreferencesKey("sameName")]?:false, folders=p[stringSetPreferencesKey("folders")]?:setOf("@camera"),
         trees=p[stringSetPreferencesKey("trees")]?:emptySet(), theme=p[stringPreferencesKey("theme")]?:"system",
-        palette=p[stringPreferencesKey("palette")]?:"system", albumMode=p[stringPreferencesKey("albumMode")]?:"folder",
+        palette=p[stringPreferencesKey("palette")]?:"system", albumMode=p[stringPreferencesKey("albumMode")]?:"none",
         albumValue=p[stringPreferencesKey("albumValue")]?:"", mobile=p[stringPreferencesKey("mobile")]?:"none",
         account=p[stringPreferencesKey("account")]?:"",bootSession=p[intPreferencesKey("bootSession")]?:-1,
-        allFolders=p[booleanPreferencesKey("allFolders")]?:false,
+        allFolders=p[booleanPreferencesKey("allFolders")]?:true,
         livePhotoPairing=p[stringPreferencesKey("livePhotoPairing")]?:"original",
+        editPolicy=p[stringPreferencesKey("editPolicy")]?:"both",
+        strictConfirmation=p[booleanPreferencesKey("strictConfirmation")]?:false,
+        archiveEnabled=p[booleanPreferencesKey("archiveEnabled")]?:true,
+        archiveDays=(p[intPreferencesKey("archiveDays")]?:14).coerceIn(1,90),
+        language=p[stringPreferencesKey("language")]?:"system",
         proxyEnabled=p[booleanPreferencesKey("proxyEnabled")]?:false,
         proxyScheme=p[stringPreferencesKey("proxyScheme")]?:"http",
         proxyHost=p[stringPreferencesKey("proxyHost")]?:"",
@@ -67,8 +74,8 @@ class Preferences(private val context: Context) {
     suspend fun mobile(value: String) { context.harborPreferences.edit { it[stringPreferencesKey("mobile")]=value; it[booleanPreferencesKey("wifi")]=value=="none" } }
     suspend fun activateAccount(account:String) {
         context.harborPreferences.edit { p ->
-            val booleans=mapOf("onboarded" to false,"auto" to false,"wifi" to true,"charging" to false,"videos" to true,"scheduled" to false,"restart" to true,"sameName" to false,"allFolders" to false)
-            val strings=mapOf("time" to "02:00","quality" to "original","albumMode" to "folder","albumValue" to "","mobile" to "none","livePhotoPairing" to "original")
+            val booleans=mapOf("onboarded" to false,"auto" to false,"wifi" to true,"charging" to false,"videos" to true,"scheduled" to false,"restart" to true,"sameName" to false,"allFolders" to true,"strictConfirmation" to false)
+            val strings=mapOf("time" to "02:00","quality" to "original","albumMode" to "none","albumValue" to "","mobile" to "none","livePhotoPairing" to "original","editPolicy" to "both")
             val integers=mapOf("concurrency" to 2,"timeout" to 60,"retries" to 3)
             val old=p[stringPreferencesKey("account")].orEmpty()
             if(old==account)return@edit
@@ -87,6 +94,23 @@ class Preferences(private val context: Context) {
             val folders=data.optJSONArray("folders")
             p[stringSetPreferencesKey("folders")]=if(folders==null)setOf("@camera") else (0 until folders.length()).map{folders.getString(it)}.toSet()
             p[stringPreferencesKey("account")]=account
+        }
+    }
+    suspend fun restoreBackupDefaults() {
+        context.harborPreferences.edit { p ->
+            listOf("auto", "onboarded", "charging", "scheduled", "sameName", "strictConfirmation").forEach { p[booleanPreferencesKey(it)]=false }
+            listOf("wifi", "videos", "restart", "allFolders").forEach { p[booleanPreferencesKey(it)]=true }
+            p[stringPreferencesKey("quality")]="original"
+            p[stringPreferencesKey("livePhotoPairing")]="original"
+            p[stringPreferencesKey("editPolicy")]="both"
+            p[stringPreferencesKey("albumMode")]="none"
+            p[stringPreferencesKey("albumValue")]=""
+            p[stringPreferencesKey("mobile")]="none"
+            p[stringPreferencesKey("time")]="02:00"
+            p[intPreferencesKey("concurrency")]=2
+            p[intPreferencesKey("timeout")]=60
+            p[intPreferencesKey("retries")]=3
+            p[stringSetPreferencesKey("folders")]=emptySet()
         }
     }
     suspend fun forgetAccount(account:String){context.harborPreferences.edit{it.remove(stringPreferencesKey("profile:$account"))}}

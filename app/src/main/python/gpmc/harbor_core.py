@@ -95,6 +95,7 @@ ACTIONS = (
     "batch_resume",
     "evaluate_scope",
     "validate_proxy",
+    "select_proxy",
     "livelink_handshake",
     "livelink_scope",
     "retry_delay",
@@ -151,7 +152,7 @@ _ALLOWED = {
     "waiting_confirmation": {"confirming", "done", "paused", "cancelled",
                              "failed", "interrupted"},
     "paused": {"queued", "cancelled", "failed"},
-    "failed": {"queued"},
+    "failed": {"queued", "cancelled"},
     "interrupted": {"queued", "cancelled", "failed"},
     "done": set(),
     "cancelled": set(),
@@ -307,6 +308,7 @@ def create_task(task_id, asset, idempotency_key=None):
         "task_id": task_id,
         "asset": clean_asset,
         "state": "queued",
+        "revision": 0,
         "error_code": None,
         "attempts": 0,
         "idempotency_key": idempotency_key,
@@ -355,11 +357,14 @@ def transition(task, to_state, event="transition", error_code=None,
         return _error("INVALID_ARGUMENT")
     if cloud_confirmed is not None and type(cloud_confirmed) is not bool:
         return _error("INVALID_ARGUMENT")
+    if to_state == "done" and cloud_confirmed is not True and task.get("cloud_confirmed") is not True:
+        return _error("CLOUD_CONFIRMATION_REQUIRED")
 
     updated = dict(task)
     updated["history"] = [dict(entry) for entry in task.get("history", [])]
     updated["asset"] = dict(task.get("asset", {}))
     now = _now_iso()
+    updated["revision"] = task.get("revision", 0) + 1
     updated["state"] = to_state
     updated["updated_at"] = now
     updated["history"].append({"state": to_state, "at": now, "event": event})
@@ -1273,7 +1278,7 @@ def migrate_legacy(records):
 _KNOWN_TASK_FIELDS = frozenset({
     "task_id", "asset", "state", "error_code", "attempts",
     "idempotency_key", "remote_key", "cloud_confirmed", "created_at",
-    "updated_at", "history", "settings", "credentials",
+    "updated_at", "history", "settings", "credentials", "revision",
     "credentials_migrated", "unknown_fields", "redacted_fields",
 })
 
@@ -1367,6 +1372,9 @@ def capabilities():
 
 
 def _dispatch_value(action, value):
+    if action == "select_proxy":
+        from .proxy_selection import select_proxy
+        return select_proxy(value)
     if value is None:
         value = {}
     if not isinstance(value, dict):

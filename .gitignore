@@ -54,6 +54,7 @@ ENV/
 .coverage
 htmlcov/
 .gpmc/
+.runtime-cache/
 
 # ====================================================================
 # Output & Release Packaging

@@ -48,10 +48,10 @@ fun HarborTopStatus(vm:HarborViewModel,data:HarborUiData,transfers:Map<String,Tr
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
                 Icon(Icons.Outlined.CloudUpload,null,Modifier.size(20.dp),tint=MaterialTheme.colorScheme.primary)
                 Column(Modifier.weight(1f)) {
-                    Text(title,style=MaterialTheme.typography.labelLarge)
-                    Text(caption,style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1)
+                    LText(title,style=MaterialTheme.typography.labelLarge)
+                    LText(caption,style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1)
                 }
-                Text("${(fraction*100).toInt()}%",style=MaterialTheme.typography.labelLarge)
+                LText("${(fraction*100).toInt()}%",style=MaterialTheme.typography.labelLarge)
                 if(job.id==data.activeJob&&job.state=="running")IconButton(onClick=vm::pause,modifier=Modifier.size(36.dp)){Icon(Icons.Outlined.Pause,"暂停备份")}
                 else if(job.state=="paused")IconButton(onClick={vm.resume(job.id)},modifier=Modifier.size(36.dp)){Icon(Icons.Outlined.PlayArrow,"继续备份")}
             }

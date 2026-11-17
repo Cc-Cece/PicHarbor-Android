@@ -12,7 +12,7 @@ import androidx.compose.ui.Modifier
 object HarborMotion {
     const val SHORT=120
     const val MEDIUM=240
-    fun pageOrder(page:String)=when(page){"photos"->0;"backup"->1;"me"->2;else->3}
+    fun pageOrder(page:String)=when(page){"photos"->0;"backup"->1;"activity"->2;else->3}
 }
 
 @Composable

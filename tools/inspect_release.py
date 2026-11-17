@@ -18,6 +18,11 @@ extension = json.loads((root / 'app/src/main/assets/engine-extension.json').read
 with zipfile.ZipFile(apk) as archive:
     names = archive.namelist()
     assert 'lib/arm64-v8a/libpython3.13.so' in names
+    assert 'lib/arm64-v8a/libharbor_proxy.so' in names, 'Missing pinned native proxy runtime'
+    assert 'assets/proxy-notices/LICENSE' in names and 'assets/proxy-notices/arm64-v8a.json' in names
+    provenance=json.loads(archive.read('assets/proxy-notices/arm64-v8a.json'))
+    assert hashlib.sha256(archive.read('lib/arm64-v8a/libharbor_proxy.so')).hexdigest()==provenance['sha256'], 'Changed proxy executable'
+    assert 'assets/localization/en.json' in names and 'assets/localization/yue-Hant-HK.json' in names
     assert all(name.startswith('lib/arm64-v8a/') for name in names if name.startswith('lib/'))
     assert 'assets/LICENSE.txt' in names and 'assets/NOTICE.txt' in names
     assert 'assets/diagnostic-event.schema.json' in names and 'assets/diagnostic-format.md' in names

@@ -1,15 +1,17 @@
-# Release signing identity
+# PicHarbor Mobile signing identity
 
-All release builds must use the existing `picharbor` key. The public certificate SHA-256 is pinned in `tools/release-signing.sha256`; the private key and passwords must never be committed.
+New application ID: `com.cccece.picharbor.mobile`. The old application, its data and signing identity remain unchanged. Legacy instructions: [legacy/SIGNING-before-mobile.md](legacy/SIGNING-before-mobile.md).
 
-GitHub Actions requires repository Actions Secrets:
+- Keystore: `%LOCALAPPDATA%\PicHarborMobileBuild\signing\picharbor-release.jks`
+- Alias: `picharbor`
+- Password: `password.dpapi` in the same protected directory.
+- Public certificate SHA-256: `65de9c795940ee1a05dade807814a8e70ca395f6a1ab1e0075faab7cea2133f7`
+- Public pin: `tools/release-signing.sha256`.
 
-- `PICHARBOR_KEYSTORE_BASE64`: Base64-encoded JKS file. Base64 is encoding, not encryption.
-- `PICHARBOR_STORE_PASSWORD`: JKS store password.
-- `PICHARBOR_KEY_PASSWORD`: private-key password; explicitly configured even when equal to store password.
+`tools/initialize-mobile-signing.ps1` creates the identity only when both key and password are absent. Once initialized it verifies the retained identity, refusing incomplete or mismatched files. Never reset the pin or regenerate a replacement key for this app.
 
-Missing secrets stop publishing. The workflow verifies the keystore certificate before building, then uses Android apksigner to verify the complete signed APK and compare its certificate to the same pinned identity before uploading any release assets.
+Build using `powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-release.ps1 -Verify`. Missing identity files stop release builds. The keystore and resulting APK certificate are both verified.
 
-Local builds use `%LOCALAPPDATA%\PicHarborBuild\signing\picharbor-release.jks` and its existing DPAPI-protected password. `tools/build-release.ps1` fails if either is missing; it must not silently create a replacement key. `tools/backup-signing.ps1` can create a portable encrypted PKCS12 copy with a separately held backup password. Keep at least one copy outside this computer and keep its password separately.
+CI uses separate secrets: `PICHARBOR_MOBILE_KEYSTORE_BASE64`, `PICHARBOR_MOBILE_STORE_PASSWORD`, `PICHARBOR_MOBILE_KEY_PASSWORD`. Do not overwrite legacy secrets. Process-scoped build environment names remain `PICHARBOR_KEYSTORE`, `PICHARBOR_STORE_PASSWORD`, `PICHARBOR_KEY_PASSWORD`; scripts clear them after use.
 
-This identity matches the locally retained 1.0.8 APK. Installations signed with another key, including the superseded temporary-key beta.5, do not automatically become compatible. Replacing a release download does not change the signature of an already installed APK. No claim is made that every historically published APK used this identity.
+The private directory is restricted to the current Windows user and LocalSystem. `tools/backup-signing.ps1 -Destination <new-file.p12>` creates an encrypted portable backup with a separate password. Keep an off-device copy and hold its password separately. DPAPI alone cannot be recovered under another Windows identity. No off-device destination has been supplied; external archival remains an operator task.
